@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 import aiofiles
 import aiohttp
+import logging
 
 from .enums import AudioFormat, VideoFormat, Quality
 from .basemodels import (
@@ -28,6 +29,8 @@ from .basemodels import (
     HealthResponse,
 )
 from .utils import call_callback
+
+logger = logging.getLogger(__name__)
 
 class Downloader:
     """Main downloader class with async support"""
@@ -49,7 +52,7 @@ class Downloader:
         # Setup ffmpeg
         await self._setup_ffmpeg()
 
-        print("✅ All binaries are ready!")
+        logger.info("✅ All binaries are ready!")
 
     async def _setup_ytdlp(self) -> None:
         """Download yt-dlp binary"""
@@ -65,7 +68,7 @@ class Downloader:
         self.ytdlp_path = self.bin_dir / filename
 
         if not self.ytdlp_path.exists():
-            print(f"📥 Downloading yt-dlp...")
+            logger.info(f"📥 Downloading yt-dlp...")
             await self._download_file(url, self.ytdlp_path)
 
             if system != "windows":
@@ -80,7 +83,7 @@ class Downloader:
             self.ffprobe_path = self.bin_dir / "ffprobe.exe"
 
             if not self.ffmpeg_path.exists():
-                print(f"📥 Downloading ffmpeg for Windows...")
+                logger.info(f"📥 Downloading ffmpeg for Windows...")
                 url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
                 temp_file = self.bin_dir / "ffmpeg.zip"
 
@@ -94,14 +97,14 @@ class Downloader:
                 self.ffmpeg_path = "ffmpeg"
                 self.ffprobe_path = "ffprobe"
             else:
-                print("⚠️  ffmpeg not found. Please install via: brew install ffmpeg")
+                logger.warning("⚠️  ffmpeg not found. Please install via: brew install ffmpeg")
 
         else:  # Linux
             if shutil.which("ffmpeg"):
                 self.ffmpeg_path = "ffmpeg"
                 self.ffprobe_path = "ffprobe"
             else:
-                print("⚠️  ffmpeg not found. Please install via your package manager")
+                logger.warning("⚠️  ffmpeg not found. Please install via your package manager")
 
     async def _extract_ffmpeg_windows(self, zip_path: Path) -> None:
         """Extract ffmpeg from Windows zip file"""
@@ -408,7 +411,7 @@ class Downloader:
                 )
                 downloaded_files.append(filename)
             except Exception as e:
-                print(f"Failed to download {video_url.get('title', 'Unknown')}: {e}")
+                logger.error(f"Failed to download {video_url.get('title', 'Unknown')}: {e}")
 
         return downloaded_files
 
@@ -536,7 +539,7 @@ class Downloader:
                 cmd.extend([f"--{key}", str(value)])
 
         cmd.append(url)
-        print(cmd)
+        logger.debug(cmd)
         return cmd
 
     async def _read_process_output(self, process):

@@ -3,3 +3,4 @@ __pycache__/
 downloads/
 .pytest_cache/
 dist/
+*.bat
