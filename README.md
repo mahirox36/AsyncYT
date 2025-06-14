@@ -1,9 +1,9 @@
-# AsyncYT 🌐📥
+# AsyncYT
 
 **AsyncYT** is a fully async, high-performance YouTube downloader powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and `ffmpeg`.  
 It comes with auto binary setup, progress tracking, playlist support, search, and clean API models using `pydantic`.
 
-## ✨ Features
+## Features
 
 - ✅ Async from the ground up
 - 🎵 Audio/video/playlist support
@@ -12,13 +12,13 @@ It comes with auto binary setup, progress tracking, playlist support, search, an
 - 📡 Live progress (WebSocket-friendly)
 - 📚 Clean and extensible
 
-## 🚀 Install
+## Install
 
 ```bash
 pip install asyncyt
 ```
 
-## 🧪 Example
+## Example
 
 ```python
 from asyncyt import Downloader, DownloadConfig, Quality
@@ -34,7 +34,7 @@ filename = await downloader.download(info.url, config)
 print("Downloaded to", filename)
 ```
 
-## 📚 Documentation
+## Documentation
 
 👉 [Read the Docs](https://mahirox36.github.io/asyncyt)
 
