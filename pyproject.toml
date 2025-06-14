@@ -1,11 +1,11 @@
 [project]
 name = "asyncyt"
-version = "1.0.0"
+version = "1.0.1"
 description = "An async-first YouTube downloader library using yt-dlp and ffmpeg"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [{ name="MahiroX36", email="mahiroc36@gmail.com" }]
-keywords = ["youtube", "downloader", "async", "yt-dlp", "ffmpeg"]
+keywords = ["youtube", "downloader", "async", "yt-dlp", "ffmpeg", "python"]
 dependencies = [
   "aiohttp",
   "aiofiles",
@@ -14,8 +14,8 @@ dependencies = [
 requires-python = ">=3.10"
 
 [project.urls]
-Homepage = "https://github.com/mahirox36/asyncyt"
-Documentation = "https://mahirox36.github.io/asyncyt"
+Homepage = "https://github.com/mahirox36/AsyncYT"
+Documentation = "https://mahirox36.github.io/AsyncYT/"
 
 [build-system]
 requires = ["hatchling"]

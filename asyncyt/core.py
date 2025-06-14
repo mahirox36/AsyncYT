@@ -469,22 +469,25 @@ class Downloader:
             )
         else:
             quality = Quality(config.quality)
+
+            format_selector = ""
+
             if quality == Quality.BEST:
-                cmd.extend(["-f", "best"])
+                format_selector = "bv*+ba/b"
             elif quality == Quality.WORST:
-                cmd.extend(["-f", "worst"])
+                format_selector = "worst"
             elif quality == Quality.AUDIO_ONLY:
-                cmd.extend(["-f", "bestaudio"])
+                format_selector = "bestaudio"
             elif quality == Quality.VIDEO_ONLY:
-                cmd.extend(["-f", "bestvideo"])
+                format_selector = "bestvideo"
             else:
                 height = quality.value.replace("p", "")
-                cmd.extend(
-                    [
-                        "-f",
-                        f"bestvideo[height<={height}]+bestaudio/best[height<={height}]",
-                    ]
+                format_selector = (
+                    f"bestvideo[height<={height}][ext=mp4]+"
+                    f"bestaudio[ext=m4a]/best[height<={height}][ext=mp4]"
                 )
+
+            cmd.extend(["-f", format_selector])
 
         # Output format
         if config.video_format and not config.extract_audio:
@@ -533,6 +536,7 @@ class Downloader:
                 cmd.extend([f"--{key}", str(value)])
 
         cmd.append(url)
+        print(cmd)
         return cmd
 
     async def _read_process_output(self, process):

@@ -2,3 +2,4 @@ bin/
 __pycache__/
 downloads/
 .pytest_cache/
+dist/
