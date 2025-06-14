@@ -1,5 +1,3 @@
-# AsyncYT Docs
-
 Welcome to the documentation for **AsyncYT** 🧠✨  
 A YouTube downloader that’s cute, clean, and async from top to bottom!
 
@@ -7,7 +5,7 @@ A YouTube downloader that’s cute, clean, and async from top to bottom!
 
 ### Downloader
 
-```python
+```py
 from asyncyt import Downloader
 ```
 
@@ -20,7 +18,7 @@ Main class with:
 
 ### Configuration
 
-```python
+```py
 DownloadConfig(...)
 ```
 
@@ -31,7 +29,5 @@ Config options for:
 - Subtitles
 - Output path
 - Retry settings
-
-...
 
 ## ✨ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/)
