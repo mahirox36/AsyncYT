@@ -71,27 +71,35 @@ class VideoInfo(BaseModel):
 class DownloadConfig(BaseModel):
     """Configuration for downloads"""
 
-    output_path: str = Field("./downloads", description="Output directory path")
-    quality: Quality = Field(Quality.BEST, description="Video quality setting")
+    output_path: str = Field(default="./downloads", description="Output directory path")
+    quality: Quality = Field(default=Quality.BEST, description="Video quality setting")
     audio_format: Optional[AudioFormat] = Field(
-        None, description="Audio format for extraction"
+        default=None, description="Audio format for extraction"
     )
     video_format: Optional[VideoFormat] = Field(
-        None, description="Video format for output"
+        default=None, description="Video format for output"
     )
-    extract_audio: bool = Field(False, description="Extract audio only")
-    embed_subs: bool = Field(False, description="Embed subtitles in video")
-    write_subs: bool = Field(False, description="Write subtitle files")
-    subtitle_lang: str = Field("en", description="Subtitle language code")
-    write_thumbnail: bool = Field(False, description="Download thumbnail")
-    embed_thumbnail: bool = Field(False, description="Embed thumbnail")
-    write_info_json: bool = Field(False, description="Write info JSON file")
-    custom_filename: Optional[str] = Field(None, description="Custom filename template")
-    cookies_file: Optional[str] = Field(None, description="Path to cookies file")
-    proxy: Optional[str] = Field(None, description="Proxy URL")
-    rate_limit: Optional[str] = Field(None, description="Rate limit (e.g., '1M')")
-    retries: int = Field(3, ge=0, le=10, description="Number of retries")
-    fragment_retries: int = Field(3, ge=0, le=10, description="Fragment retries")
+    extract_audio: bool = Field(default=False, description="Extract audio only")
+    embed_subs: bool = Field(default=False, description="Embed subtitles in video")
+    write_subs: bool = Field(default=False, description="Write subtitle files")
+    subtitle_lang: str = Field(default="en", description="Subtitle language code")
+    write_thumbnail: bool = Field(default=False, description="Download thumbnail")
+    embed_thumbnail: bool = Field(default=False, description="Embed thumbnail")
+    write_info_json: bool = Field(default=False, description="Write info JSON file")
+    custom_filename: Optional[str] = Field(
+        default=None, description="Custom filename template"
+    )
+    cookies_file: Optional[str] = Field(
+        default=None, description="Path to cookies file"
+    )
+    proxy: Optional[str] = Field(default=None, description="Proxy URL")
+    rate_limit: Optional[str] = Field(
+        default=None, description="Rate limit (e.g., '1M')"
+    )
+    retries: int = Field(default=3, ge=0, le=10, description="Number of retries")
+    fragment_retries: int = Field(
+        default=3, ge=0, le=10, description="Fragment retries"
+    )
     custom_options: Dict[str, Any] = Field(
         default_factory=dict, description="Custom yt-dlp options"
     )

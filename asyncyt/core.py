@@ -32,6 +32,9 @@ from .utils import call_callback
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["Downloader"]
+
+
 class Downloader:
     """Main downloader class with async support"""
 
@@ -97,14 +100,18 @@ class Downloader:
                 self.ffmpeg_path = "ffmpeg"
                 self.ffprobe_path = "ffprobe"
             else:
-                logger.warning("⚠️  ffmpeg not found. Please install via: brew install ffmpeg")
+                logger.warning(
+                    "⚠️  ffmpeg not found. Please install via: brew install ffmpeg"
+                )
 
         else:  # Linux
             if shutil.which("ffmpeg"):
                 self.ffmpeg_path = "ffmpeg"
                 self.ffprobe_path = "ffprobe"
             else:
-                logger.warning("⚠️  ffmpeg not found. Please install via your package manager")
+                logger.warning(
+                    "⚠️  ffmpeg not found. Please install via your package manager"
+                )
 
     async def _extract_ffmpeg_windows(self, zip_path: Path) -> None:
         """Extract ffmpeg from Windows zip file"""
@@ -175,7 +182,7 @@ class Downloader:
     ) -> str:
         """Download a video with the given configuration"""
         if not config:
-            config = DownloadConfig()  # type: ignore
+            config = DownloadConfig()
 
         # Ensure output directory exists
         output_dir = Path(config.output_path)
@@ -286,7 +293,7 @@ class Downloader:
     ) -> DownloadResponse:
         """Download with API-friendly response format"""
         try:
-            config = request.config or DownloadConfig()  # type: ignore
+            config = request.config or DownloadConfig()
 
             # Get video info first
             try:
@@ -335,7 +342,7 @@ class Downloader:
     ) -> PlaylistResponse:
         """Download playlist with API-friendly response format"""
         try:
-            config = request.config or DownloadConfig()  # type: ignore
+            config = request.config or DownloadConfig()
 
             # Get playlist info
             playlist_info = await self.get_playlist_info(request.url)
@@ -390,7 +397,7 @@ class Downloader:
     ) -> List[str]:
         """Download an entire playlist"""
         if not config:
-            config = DownloadConfig()  # type: ignore
+            config = DownloadConfig()
 
         # Get playlist info first
         playlist_info = await self.get_playlist_info(url)
@@ -411,7 +418,9 @@ class Downloader:
                 )
                 downloaded_files.append(filename)
             except Exception as e:
-                logger.error(f"Failed to download {video_url.get('title', 'Unknown')}: {e}")
+                logger.error(
+                    f"Failed to download {video_url.get('title', 'Unknown')}: {e}"
+                )
 
         return downloaded_files
 
