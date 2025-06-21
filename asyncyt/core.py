@@ -87,7 +87,7 @@ class Downloader:
 
             if not self.ffmpeg_path.exists():
                 logger.info(f"📥 Downloading ffmpeg for Windows...")
-                url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+                url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-n7.1-latest-win64-lgpl-7.1.zip"
                 temp_file = self.bin_dir / "ffmpeg.zip"
 
                 await self._download_file(url, temp_file)
