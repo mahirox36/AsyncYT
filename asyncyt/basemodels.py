@@ -141,7 +141,7 @@ class DownloadProgress(BaseModel):
     status: str = "downloading"
     downloaded_bytes: int = 0
     total_bytes: int = 0
-    speed: float = 0.0
+    speed: str = ""
     eta: int = 0
     percentage: float = Field(0.0, ge=0.0, le=100.0)
 

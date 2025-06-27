@@ -208,15 +208,22 @@ class Downloader:
         async for line in self._read_process_output(process):
             line = line.strip()
 
-            if progress_callback:
+            if line:
+                old_percentage = progress.percentage
                 self._parse_progress(line, progress)
-                await call_callback(progress_callback, progress)
 
-            # Capture output filename
-            if "[download] Destination:" in line:
-                output_file: str = line.split("Destination: ")[1]
-            elif "[download]" in line and "has already been downloaded" in line:
-                output_file: str = line.split()[1]
+                if progress_callback and (
+                    progress.percentage != old_percentage
+                    or progress.downloaded_bytes > 0
+                    or progress.total_bytes > 0
+                ):
+                    await call_callback(progress_callback, progress)
+
+                # Capture output filename
+                if "[download] Destination:" in line:
+                    output_file = line.split("Destination: ")[1]
+                elif "[download]" in line and "has already been downloaded" in line:
+                    output_file = line.split()[1]
 
         await process.wait()
 
@@ -547,6 +554,13 @@ class Downloader:
             else:
                 cmd.extend([f"--{key}", str(value)])
 
+        cmd.extend(
+            [
+                "--progress-template",
+                "download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
+            ]
+        )
+        cmd.append("--newline")
         cmd.append(url)
         logger.debug(cmd)
         return cmd
@@ -562,59 +576,79 @@ class Downloader:
     def _parse_progress(self, line: str, progress: DownloadProgress) -> None:
         """Parse progress information from yt-dlp output"""
         line = line.strip()
-
         if "Destination:" in line:
             # Extract title
             progress.title = Path(line.split("Destination: ")[1]).stem
             return
 
-        if "[download]" in line and "%" in line:
+        if line.startswith("PROGRESS|"):
             try:
-                # Clean line from carriage returns
-                line = line.replace("\r", "").replace("\n", "")
-                parts = line.split()
+                # Split the custom format: PROGRESS|percentage|downloaded|total|speed|eta
+                parts = line.split("|")
+                if len(parts) >= 6:
+                    percentage_str = parts[1].replace("%", "").strip()
+                    downloaded_str = parts[2].strip()
+                    total_str = parts[3].strip()
+                    speed_str = parts[4].strip()
+                    eta_str = parts[5].strip()
 
-                for i, part in enumerate(parts):
-                    if "%" in part:
-                        progress.percentage = float(part.replace("%", "").strip())
-                    elif part == "of" and i + 1 < len(parts):
-                        progress.total_bytes = self._parse_size(parts[i + 1])
-                    elif part == "at" and i + 1 < len(parts):
-                        progress.speed = self._parse_speed(parts[i + 1])
-                    elif part == "ETA" and i + 1 < len(parts):
-                        progress.eta = self._parse_time(parts[i + 1])
-            except (ValueError, IndexError):
+                    # Parse percentage
+                    if percentage_str and percentage_str != "N/A":
+                        progress.percentage = float(percentage_str)
+
+                    # Parse downloaded bytes
+                    if downloaded_str and downloaded_str != "N/A":
+                        progress.downloaded_bytes = self._parse_size(downloaded_str)
+
+                    # Parse total bytes
+                    if total_str and total_str != "N/A":
+                        progress.total_bytes = self._parse_size(total_str)
+
+                    # Parse speed
+                    if speed_str and speed_str != "N/A":
+                        progress.speed = speed_str
+
+                    # Parse ETA
+                    if eta_str and eta_str != "N/A":
+                        progress.eta = self._parse_time(eta_str)
+
+                    return
+            except (ValueError, IndexError) as e:
                 pass
 
     def _parse_size(self, size_str: str) -> int:
-        """Parse size string to bytes"""
-        try:
-            size_str = size_str.upper()
-            if "K" in size_str:
-                return int(float(size_str.replace("K", "")) * 1024)
-            elif "M" in size_str:
-                return int(float(size_str.replace("M", "")) * 1024 * 1024)
-            elif "G" in size_str:
-                return int(float(size_str.replace("G", "")) * 1024 * 1024 * 1024)
-            else:
-                return int(size_str)
-        except ValueError:
+        """Parse size string (e.g., '10.5MiB', '1.2GB') to bytes"""
+        if not size_str:
             return 0
 
-    def _parse_speed(self, speed_str: str) -> float:
-        """Parse speed string to bytes per second"""
+        size_str = size_str.strip().replace("~", "")
+
+        # Handle different size units
+        multipliers = {
+            "B": 1,
+            "KiB": 1024,
+            "KB": 1000,
+            "MiB": 1024**2,
+            "MB": 1000**2,
+            "GiB": 1024**3,
+            "GB": 1000**3,
+            "TiB": 1024**4,
+            "TB": 1000**4,
+        }
+
+        for unit, multiplier in multipliers.items():
+            if size_str.endswith(unit):
+                try:
+                    number = float(size_str[: -len(unit)])
+                    return int(number * multiplier)
+                except ValueError:
+                    return 0
+
+        # If no unit, assume bytes
         try:
-            speed_str = speed_str.upper().replace("/S", "")
-            if "K" in speed_str:
-                return float(speed_str.replace("K", "")) * 1024
-            elif "M" in speed_str:
-                return float(speed_str.replace("M", "")) * 1024 * 1024
-            elif "G" in speed_str:
-                return float(speed_str.replace("G", "")) * 1024 * 1024 * 1024
-            else:
-                return float(speed_str)
+            return int(float(size_str))
         except ValueError:
-            return 0.0
+            return 0
 
     def _parse_time(self, time_str: str) -> int:
         """Parse time string to seconds"""
