@@ -55,7 +55,7 @@ class Downloader:
         # Setup ffmpeg
         await self._setup_ffmpeg()
 
-        logger.info("✅ All binaries are ready!")
+        logger.info("All binaries are ready!")
 
     async def _setup_ytdlp(self) -> None:
         """Download yt-dlp binary"""
@@ -71,7 +71,7 @@ class Downloader:
         self.ytdlp_path = self.bin_dir / filename
 
         if not self.ytdlp_path.exists():
-            logger.info(f"📥 Downloading yt-dlp...")
+            logger.info(f"Downloading yt-dlp...")
             await self._download_file(url, self.ytdlp_path)
 
             if system != "windows":
@@ -86,7 +86,7 @@ class Downloader:
             self.ffprobe_path = self.bin_dir / "ffprobe.exe"
 
             if not self.ffmpeg_path.exists():
-                logger.info(f"📥 Downloading ffmpeg for Windows...")
+                logger.info(f"Downloading ffmpeg for Windows...")
                 url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-n7.1-latest-win64-lgpl-7.1.zip"
                 temp_file = self.bin_dir / "ffmpeg.zip"
 
@@ -101,7 +101,7 @@ class Downloader:
                 self.ffprobe_path = "ffprobe"
             else:
                 logger.warning(
-                    "⚠️  ffmpeg not found. Please install via: brew install ffmpeg"
+                    "ffmpeg not found. Please install via: brew install ffmpeg"
                 )
 
         else:  # Linux
@@ -110,7 +110,7 @@ class Downloader:
                 self.ffprobe_path = "ffprobe"
             else:
                 logger.warning(
-                    "⚠️  ffmpeg not found. Please install via your package manager"
+                    "ffmpeg not found. Please install via your package manager"
                 )
 
     async def _extract_ffmpeg_windows(self, zip_path: Path) -> None:
