@@ -1,33 +1,36 @@
-Welcome to the documentation for **AsyncYT** 🧠✨  
+# AsyncYT Documentation
+
+Welcome to **AsyncYT** 🧠✨
 A YouTube downloader that’s cute, clean, and async from top to bottom!
 
-## 💻 Modules
+## Table of Contents
 
-### Downloader
+- [Installation](./installation.md)
+- [Quickstart](#quickstart)
+- [Usage](./usage.md)
+- [API Reference](./api.md)
+- [Configuration](./config.md)
+- [Examples](./examples.md)
+
+---
+
+## Quickstart
 
 ```py
 from asyncyt import Downloader
+import asyncio
+
+downloader = Downloader()
+
+async def main():
+    await downloader.setup_binaries()
+    info = await downloader.get_video_info('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+    print(info.title)
+    await downloader.download('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+
+asyncio.run(main())
 ```
 
-Main class with:
+---
 
-- `get_video_info(url)`
-- `download(url, config)`
-- `search(query)`
-- and more!
-
-### Configuration
-
-```py
-DownloadConfig(...)
-```
-
-Config options for:
-
-- Quality
-- Audio/Video formats
-- Subtitles
-- Output path
-- Retry settings
-
-## ✨ Powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [FFmpeg](https://ffmpeg.org/)
+See [Installation](./installation.md) to get started, or [Usage](./usage.md) for more details.

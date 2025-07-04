@@ -15,6 +15,7 @@ requires-python = ">=3.10"
 
 [project.urls]
 Homepage = "https://github.com/mahirox36/AsyncYT"
+Documentation = "https://mahirox36.github.io/AsyncYT/"
 
 [build-system]
 requires = ["hatchling"]
