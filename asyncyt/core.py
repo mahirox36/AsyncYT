@@ -235,7 +235,13 @@ class Downloader:
             progress.percentage = 100.0
             await call_callback(progress_callback, progress)
         if config and (config.video_format or config.audio_format):
-            ext = config.video_format.value if config.video_format else config.audio_format.value # type: ignore
+            # Support both Enum and string for video/audio format
+            if config.video_format:
+                ext = config.video_format.value if hasattr(config.video_format, "value") else str(config.video_format)
+            elif config.audio_format:
+                ext = config.audio_format.value if hasattr(config.audio_format, "value") else str(config.audio_format)
+            else:
+                return output_file
             base, _ = os.path.splitext(output_file)
             output_file = f"{base}.{ext}"
         return output_file
