@@ -5,6 +5,7 @@ from asyncyt import (
     DownloadProgress,
     Quality,
     DownloadRequest,
+    VideoFormat
 )
 from asyncio import run
 
@@ -18,7 +19,7 @@ async def main() -> None:
         print("Please put a Valid URL.")
         return await main()
 
-    config = DownloadConfig(quality=Quality.BEST)
+    config = DownloadConfig(quality=Quality.BEST, video_format=VideoFormat.MP4)
     download_request = DownloadRequest(url=link, config=config)
 
     async def progress_print(progress: DownloadProgress):

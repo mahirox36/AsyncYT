@@ -234,6 +234,10 @@ class Downloader:
             progress.status = "finished"
             progress.percentage = 100.0
             await call_callback(progress_callback, progress)
+        if config and (config.video_format or config.audio_format):
+            ext = config.video_format.value if config.video_format else config.audio_format.value # type: ignore
+            base, _ = os.path.splitext(output_file)
+            output_file = f"{base}.{ext}"
         return output_file
 
     async def health_check(self) -> HealthResponse:

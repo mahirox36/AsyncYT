@@ -1,6 +1,6 @@
 [project]
 name = "asyncyt"
-version = "1.0.6"
+version = "1.0.7"
 description = "An async-first YouTube downloader library using yt-dlp and ffmpeg"
 readme = "README.md"
 license = {text = "MIT"}
