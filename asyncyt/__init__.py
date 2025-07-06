@@ -1,5 +1,5 @@
 """
-AsyncYT - A comprehensive async YouTube downloader library
+AsyncYT - A comprehensive async Any website downloader library
 Uses yt-dlp and ffmpeg with automatic binary management
 """
 

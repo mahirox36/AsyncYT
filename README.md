@@ -1,6 +1,6 @@
 # AsyncYT
 
-**AsyncYT** is a fully async, high-performance YouTube downloader powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and `ffmpeg`.  
+**AsyncYT** is a fully async, high-performance Any website downloader powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and `ffmpeg`.  
 It comes with auto binary setup, progress tracking, playlist support, search, and clean API models using `pydantic`.
 
 ## Features

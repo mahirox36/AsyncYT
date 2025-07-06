@@ -164,11 +164,6 @@ class DownloadRequest(BaseModel):
     def validate_url(cls, v):
         if not v.strip():
             raise ValueError("URL cannot be empty")
-        # Basic URL validation
-        if not any(
-            domain in v.lower() for domain in ["youtube.com", "youtu.be", "youtube.com"]
-        ):
-            raise ValueError("Only YouTube URLs are supported")
         return v.strip()
 
     class Config:
