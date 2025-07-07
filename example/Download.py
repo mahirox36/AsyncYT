@@ -11,7 +11,7 @@ from asyncio import run
 
 
 async def main() -> None:
-    print("Doing init thingy...")
+    print("Starting initialization...")
     downloader = Downloader()
     await downloader.setup_binaries()
     link = input("Enter a URL\n--> ")

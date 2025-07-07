@@ -14,6 +14,8 @@ __all__ = [
     "SearchResponse",
     "PlaylistResponse",
     "HealthResponse",
+    "DownloadFileProgress",
+    "SetupProgress"
 ]
 
 
@@ -149,6 +151,31 @@ class DownloadProgress(BaseModel):
     @property
     def is_complete(self) -> bool:
         return self.status == "finished"
+
+    class Config:
+        json_encoders = {float: lambda v: round(v, 2)}
+
+class DownloadFileProgress(BaseModel):
+    """Progress information for File downloads"""
+
+    status: str = "downloading"
+    downloaded_bytes: int = 0
+    total_bytes: int = 0
+    percentage: float = Field(0.0, ge=0.0, le=100.0)
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status == "finished"
+
+    class Config:
+        json_encoders = {float: lambda v: round(v, 2)}
+
+class SetupProgress(BaseModel):
+    """Progress information for File downloads"""
+
+    file: str = "yt-dlp"
+    download_file_progress: DownloadFileProgress= Field(description="the progress of the file being downloaded")
+
 
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
