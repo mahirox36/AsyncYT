@@ -1,5 +1,5 @@
 """
-AsyncYT - A comprehensive async YouTube downloader library
+AsyncYT - A comprehensive async Any website downloader library
 Uses yt-dlp and ffmpeg with automatic binary management
 """
 
@@ -7,7 +7,9 @@ import asyncio
 import json
 import os
 import platform
+import re
 import shutil
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
@@ -122,16 +124,53 @@ class Downloader:
                     file_info.filename = os.path.basename(file_info.filename)
                     zip_ref.extract(file_info, self.bin_dir)
 
-    async def _download_file(self, url: str, filepath: Path) -> None:
-        """Download a file asynchronously"""
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    async with aiofiles.open(filepath, "wb") as f:
-                        async for chunk in response.content.iter_chunked(8192):
-                            await f.write(chunk)
-                else:
-                    raise Exception(f"Failed to download {url}: {response.status}")
+    async def _download_file(self, url: str, filepath: Path, max_retries: int = 5) -> None:
+        """Download a file asynchronously with retries, timeout, resume support, and file size verification"""
+        temp_filepath = filepath.with_suffix(filepath.suffix + ".part")
+        attempt = 0
+        backoff = 2
+        while attempt < max_retries:
+            try:
+                resume_pos = 0
+                if temp_filepath.exists():
+                    resume_pos = temp_filepath.stat().st_size
+                headers = {}
+                if resume_pos > 0:
+                    headers["Range"] = f"bytes={resume_pos}-"
+
+                timeout_obj = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
+                async with aiohttp.ClientSession(timeout=timeout_obj) as session:
+                    async with session.get(url, headers=headers) as response:
+                        if response.status in (200, 206):
+                            mode = "ab" if resume_pos > 0 and response.status == 206 else "wb"
+                            async with aiofiles.open(temp_filepath, mode) as f:
+                                downloaded = resume_pos
+                                total = int(response.headers.get("Content-Length", 0)) + resume_pos if response.status == 206 else int(response.headers.get("Content-Length", 0))
+                                last_report = time.time()
+                                async for chunk in response.content.iter_chunked(8192):
+                                    await f.write(chunk)
+                                    downloaded += len(chunk)
+                                    # Print progress every 2 seconds for now
+                                    if time.time() - last_report > 2:
+                                        if total > 0:
+                                            percent = (downloaded / total) * 100
+                                            logger.info(f"Downloading {filepath.name}: {percent:.2f}% ({downloaded}/{total} bytes)")
+                                        else:
+                                            logger.info(f"Downloading {filepath.name}: {downloaded} bytes")
+                                        last_report = time.time()
+                            # Verify file size
+                            if total > 0 and temp_filepath.stat().st_size != total:
+                                raise Exception(f"Incomplete download for {filepath.name}: expected {total}, got {temp_filepath.stat().st_size}")
+                            temp_filepath.rename(filepath)
+                            return
+                        else:
+                            raise Exception(f"Failed to download {url}: {response.status}")
+            except Exception as e:
+                attempt += 1
+                wait = backoff ** attempt
+                logger.warning(f"Download attempt {attempt} failed for {url}: {e}. Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+        raise Exception(f"Failed to download {url} after {max_retries} attempts.")
 
     async def get_video_info(self, url: str) -> VideoInfo:
         """Get video information without downloading"""
@@ -202,7 +241,7 @@ class Downloader:
             cwd=output_dir,
         )
 
-        output_file: str
+        output_file: Optional[str] = None
 
         # Monitor progress
         async for line in self._read_process_output(process):
@@ -212,18 +251,24 @@ class Downloader:
                 old_percentage = progress.percentage
                 self._parse_progress(line, progress)
 
-                if progress_callback and (
-                    progress.percentage != old_percentage
-                    or progress.downloaded_bytes > 0
-                    or progress.total_bytes > 0
-                ):
+                if progress_callback and progress.percentage > old_percentage:
                     await call_callback(progress_callback, progress)
 
-                # Capture output filename
-                if "[download] Destination:" in line:
-                    output_file = line.split("Destination: ")[1]
-                elif "[download]" in line and "has already been downloaded" in line:
-                    output_file = line.split()[1]
+                # Robust output filename extraction: only set if line is an absolute path, has a valid extension, and file exists
+                valid_exts = (
+                    ".mp3",
+                    ".m4a",
+                    ".wav",
+                    ".flac",
+                    ".ogg",
+                    ".wav",
+                    ".mp4",
+                    ".webm",
+                    ".mkv",
+                    ".avi",
+                )
+                if not output_file and line.lower().endswith(valid_exts):
+                    output_file = line
 
         await process.wait()
 
@@ -234,17 +279,7 @@ class Downloader:
             progress.status = "finished"
             progress.percentage = 100.0
             await call_callback(progress_callback, progress)
-        if config and (config.video_format or config.audio_format):
-            # Support both Enum and string for video/audio format
-            if config.video_format:
-                ext = config.video_format.value if hasattr(config.video_format, "value") else str(config.video_format)
-            elif config.audio_format:
-                ext = config.audio_format.value if hasattr(config.audio_format, "value") else str(config.audio_format)
-            else:
-                return output_file
-            base, _ = os.path.splitext(output_file)
-            output_file = f"{base}.{ext}"
-        return output_file
+        return output_file  # type: ignore
 
     async def health_check(self) -> HealthResponse:
         """Check if all binaries are available and working"""
@@ -324,11 +359,16 @@ class Downloader:
 
             # Download the video
             filename = await self.download(request.url, config, progress_callback)
-
+            
+            file = Path(filename)
+            title = re.sub(r'[\\/:"*?<>|]', '_', video_info.title)
+            new_file = file.with_name(f"{title}{file.suffix}")
+            file = file.rename(new_file)
+            
             return DownloadResponse(
                 success=True,
                 message="Download completed successfully",
-                filename=filename,
+                filename=str(file.absolute()),
                 video_info=video_info,
             )
 
@@ -547,6 +587,8 @@ class Downloader:
             cmd.extend(["--proxy", config.proxy])
         if config.rate_limit:
             cmd.extend(["--limit-rate", config.rate_limit])
+        if config.embed_metadata:
+            cmd.append("--add-metadata")
 
         # Retry options
         cmd.extend(["--retries", str(config.retries)])
@@ -570,18 +612,23 @@ class Downloader:
                 "download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
             ]
         )
+        cmd.append("--no-update")
         cmd.append("--newline")
+        cmd.append("--restrict-filenames")
+        cmd.extend(["--print", "after_move:filepath"])
+
         cmd.append(url)
-        logger.debug(cmd)
         return cmd
 
     async def _read_process_output(self, process):
-        """Read process output line by line"""
+        """Read process output line by line as UTF-8 (with replacement for bad chars)"""
+        assert process.stdout is not None, "Process must have stdout=PIPE"
+    
         while True:
             line = await process.stdout.readline()
             if not line:
                 break
-            yield line.decode("utf-8", errors="ignore")
+            yield line.decode("utf-8", errors="replace").rstrip()
 
     def _parse_progress(self, line: str, progress: DownloadProgress) -> None:
         """Parse progress information from yt-dlp output"""

@@ -22,7 +22,7 @@ class VideoInfo(BaseModel):
 
     url: str
     title: str
-    duration: int = Field(0, ge=0)
+    duration: float = Field(0, ge=0)
     uploader: str
     view_count: int = Field(0, ge=0)
     like_count: Optional[int] = Field(None, ge=0)
@@ -85,6 +85,7 @@ class DownloadConfig(BaseModel):
     subtitle_lang: str = Field(default="en", description="Subtitle language code")
     write_thumbnail: bool = Field(default=False, description="Download thumbnail")
     embed_thumbnail: bool = Field(default=False, description="Embed thumbnail")
+    embed_metadata: bool = Field(default=True, description="Embed metadata")
     write_info_json: bool = Field(default=False, description="Write info JSON file")
     custom_filename: Optional[str] = Field(
         default=None, description="Custom filename template"
