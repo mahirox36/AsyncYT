@@ -9,7 +9,6 @@ import os
 import platform
 import re
 import shutil
-import time
 import zipfile
 from pathlib import Path
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Union
@@ -45,9 +44,16 @@ class Downloader:
     def __init__(self):
         self.project_root = Path.cwd()
         self.bin_dir = self.project_root / "bin"
-        self.ytdlp_path = None
-        self.ffmpeg_path = None
-        self.ffprobe_path = None
+        system = platform.system().lower()
+
+        self.ytdlp_path = (
+            self.bin_dir / "yt-dlp.exe"
+            if system == "windows"
+            else self.bin_dir / "yt-dlp"
+        )
+        self.ffmpeg_path = (
+            self.bin_dir / "ffmpeg.exe" if system == "windows" else "ffmpeg"
+        )
 
     async def setup_binaries_generator(self) -> AsyncGenerator[SetupProgress, Any]:
         """Download and setup yt-dlp and ffmpeg binaries"""
@@ -62,6 +68,7 @@ class Downloader:
             yield progress
 
         logger.info("All binaries are ready!")
+
     async def setup_binaries(self) -> None:
         """Download and setup yt-dlp and ffmpeg binaries"""
         self.bin_dir.mkdir(exist_ok=True)
@@ -81,18 +88,14 @@ class Downloader:
         system = platform.system().lower()
 
         if system == "windows":
-            filename = "yt-dlp.exe"
             url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
         else:
-            filename = "yt-dlp"
             url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
-
-        self.ytdlp_path = self.bin_dir / filename
 
         if not self.ytdlp_path.exists():
             logger.info(f"Downloading yt-dlp...")
             async for progress in self._download_file(url, self.ytdlp_path):
-                yield SetupProgress(file="yt-dlp",download_file_progress=progress)
+                yield SetupProgress(file="yt-dlp", download_file_progress=progress)
 
             if system != "windows":
                 os.chmod(self.ytdlp_path, 0o755)
@@ -103,7 +106,6 @@ class Downloader:
 
         if system == "windows":
             self.ffmpeg_path = self.bin_dir / "ffmpeg.exe"
-            self.ffprobe_path = self.bin_dir / "ffprobe.exe"
 
             if not self.ffmpeg_path.exists():
                 logger.info(f"Downloading ffmpeg for Windows...")
@@ -111,26 +113,16 @@ class Downloader:
                 temp_file = self.bin_dir / "ffmpeg.zip"
 
                 async for progress in self._download_file(url, temp_file):
-                    yield SetupProgress(file="ffmpeg",download_file_progress=progress)
+                    yield SetupProgress(file="ffmpeg", download_file_progress=progress)
                 progress.status = "extracting"
-                yield SetupProgress(file="ffmpeg",download_file_progress=progress)
+                yield SetupProgress(file="ffmpeg", download_file_progress=progress)
                 await self._extract_ffmpeg_windows(temp_file)
                 temp_file.unlink()
 
-        elif system == "darwin":  # macOS
+        else:
             # For macOS, we'll check if ffmpeg is available via Homebrew
             if shutil.which("ffmpeg"):
                 self.ffmpeg_path = "ffmpeg"
-                self.ffprobe_path = "ffprobe"
-            else:
-                logger.warning(
-                    "ffmpeg not found. Please install via: brew install ffmpeg"
-                )
-
-        else:  # Linux
-            if shutil.which("ffmpeg"):
-                self.ffmpeg_path = "ffmpeg"
-                self.ffprobe_path = "ffprobe"
             else:
                 logger.warning(
                     "ffmpeg not found. Please install via your package manager"
