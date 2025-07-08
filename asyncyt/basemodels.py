@@ -24,10 +24,10 @@ class VideoInfo(BaseModel):
 
     url: str
     title: str
-    duration: float = Field(0, ge=0)
+    duration: float = Field(0, ge=-1)
     uploader: str
-    view_count: int = Field(0, ge=0)
-    like_count: Optional[int] = Field(None, ge=0)
+    view_count: int = Field(0, ge=-1)
+    like_count: Optional[int] = Field(None, ge=-1)
     description: str = ""
     thumbnail: str = ""
     upload_date: str = ""
