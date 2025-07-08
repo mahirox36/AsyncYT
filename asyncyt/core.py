@@ -31,7 +31,7 @@ from .basemodels import (
     PlaylistResponse,
     HealthResponse,
 )
-from .utils import call_callback
+from .utils import call_callback, get_unique_filename
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +395,7 @@ class Downloader:
 
             file = Path(filename)
             title = re.sub(r'[\\/:"*?<>|]', "_", video_info.title)
-            new_file = file.with_name(f"{title}{file.suffix}")
+            new_file = get_unique_filename(file, title)
             file = file.rename(new_file)
 
             return DownloadResponse(
