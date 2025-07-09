@@ -146,8 +146,6 @@ class Downloader:
         backoff = 2
         while attempt < max_retries:
             try:
-                if filepath.exists():
-                    break
                 resume_pos = 0
                 if temp_filepath.exists():
                     resume_pos = temp_filepath.stat().st_size
