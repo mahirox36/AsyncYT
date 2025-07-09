@@ -36,7 +36,7 @@ print("Downloaded to", filename)
 
 ## Documentation
 
-👉 [Read the Docs](https://mahirox36.github.io/AsyncYT)
+👉 [Read the Docs](https://github.com/mahirox36/AsyncYT/wiki)
 
 ## License
 
