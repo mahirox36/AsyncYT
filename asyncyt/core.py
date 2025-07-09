@@ -56,7 +56,7 @@ class Downloader:
         )
 
     async def setup_binaries_generator(self) -> AsyncGenerator[SetupProgress, Any]:
-        """Download and setup yt-dlp and ffmpeg binaries"""
+        """Download and setup yt-dlp and ffmpeg binaries with yield SetupProgress"""
         self.bin_dir.mkdir(exist_ok=True)
 
         # Setup yt-dlp
@@ -276,9 +276,11 @@ class Downloader:
 
         output_file: Optional[str] = None
 
+        output = []
         # Monitor progress
         async for line in self._read_process_output(process):
             line = line.strip()
+            output.append(line)
 
             if line:
                 old_percentage = progress.percentage
@@ -303,10 +305,14 @@ class Downloader:
                 if not output_file and line.lower().endswith(valid_exts):
                     output_file = line
 
-        await process.wait()
+        returncode = await process.wait()
 
-        if process.returncode != 0:
-            raise Exception(f"Download failed for {url}")
+        if returncode != 0:
+            raise RuntimeError(
+                f"Download failed for {url}\n"
+                f"Return code: {returncode}\n"
+                f"Output:\n" + "\n".join(output)
+            )
 
         if progress_callback:
             progress.status = "finished"
