@@ -298,6 +298,8 @@ class Downloader:
                     ".webm",
                     ".mkv",
                     ".avi",
+                    ".opus",
+                    ".aac",
                 )
                 if not output_file and line.lower().endswith(valid_exts):
                     output_file = line
@@ -307,6 +309,7 @@ class Downloader:
         if returncode != 0:
             raise RuntimeError(
                 f"Download failed for {url}\n"
+                f"CMD: {" ".join(cmd)}\n"
                 f"Return code: {returncode}\n"
                 f"Output:\n" + "\n".join(output)
             )
@@ -558,18 +561,15 @@ class Downloader:
 
         # Basic options
         cmd.extend(["--no-warnings", "--progress"])
-
         # Quality selection
         if config.extract_audio:
+            audio = AudioFormat(config.audio_format).value if config.audio_format else "best"
+            audio = "vorbis" if audio == "ogg" else audio # Somehow it's not ogg but called vorbis??
             cmd.extend(
                 [
                     "-x",
                     "--audio-format",
-                    (
-                        AudioFormat(config.audio_format).value
-                        if config.audio_format
-                        else "mp3"
-                    ),
+                    audio,
                 ]
             )
         else:
