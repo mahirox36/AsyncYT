@@ -139,6 +139,7 @@ class DownloadConfig(BaseModel):
 class DownloadProgress(BaseModel):
     """Progress information for downloads"""
 
+    id: str
     url: str
     title: str = ""
     status: str = "downloading"
@@ -241,6 +242,7 @@ class DownloadResponse(BaseModel):
 
     success: bool
     message: str
+    id: str
     filename: Optional[str] = None
     video_info: Optional[VideoInfo] = None
     error: Optional[str] = None

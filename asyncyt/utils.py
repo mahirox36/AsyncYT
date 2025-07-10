@@ -4,7 +4,7 @@ import hashlib
 
 from asyncyt.basemodels import DownloadConfig
 
-__all__ = ["call_callback", "get_unique_filename", "gen_id"]
+__all__ = ["call_callback", "get_unique_filename", "get_id"]
 
 
 async def call_callback(callback, *args, **kwargs):
@@ -26,6 +26,6 @@ def get_unique_filename(file: Path, title: str) -> Path:
     return new_file
 
 
-def gen_id(url: str, config: DownloadConfig):
+def get_id(url: str, config: DownloadConfig):
     combined = url + config.model_dump_json()
     return hashlib.sha256(combined.encode()).hexdigest()

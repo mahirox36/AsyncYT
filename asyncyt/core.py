@@ -43,7 +43,7 @@ from .basemodels import (
     PlaylistResponse,
     HealthResponse,
 )
-from .utils import call_callback, gen_id, get_unique_filename
+from .utils import call_callback, get_id, get_unique_filename
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +265,7 @@ class Downloader:
         """Download a video with the given configuration"""
         if not config:
             config = DownloadConfig()
-        id = gen_id(url, config)
+        id = get_id(url, config)
         if id in self._downloads:
             raise DownloadAlreadyExistsError(id)
 
@@ -277,7 +277,7 @@ class Downloader:
         cmd = await self._build_download_command(url, config)
 
         # Create progress tracker
-        progress = DownloadProgress(url=url, percentage=0)
+        progress = DownloadProgress(url=url, percentage=0, id=id)
 
         # Execute download
         process = await asyncio.create_subprocess_exec(
@@ -414,6 +414,7 @@ class Downloader:
         """Download with API-friendly response format"""
         try:
             config = request.config or DownloadConfig()
+            id = get_id(request.url, config)
 
             # Get video info first
             try:
@@ -423,6 +424,7 @@ class Downloader:
                     success=False,
                     message="Failed to get video information",
                     error=str(e),
+                    id=id,
                 )
 
             # Download the video
@@ -437,13 +439,14 @@ class Downloader:
                 message="Download completed successfully",
                 filename=str(file.absolute()),
                 video_info=video_info,
+                id=id,
             )
         except AsyncYTBase:
             raise
 
         except Exception as e:
             return DownloadResponse(
-                success=False, message="Download failed", error=str(e)
+                success=False, message="Download failed", error=str(e), id=id
             )
 
     async def search_with_response(self, request: SearchRequest) -> SearchResponse:
@@ -469,6 +472,7 @@ class Downloader:
         """Download playlist with API-friendly response format"""
         try:
             config = request.config or DownloadConfig()
+            id = get_id(request.url, config)
 
             # Get playlist info
             playlist_info = await self.get_playlist_info(request.url)
@@ -486,6 +490,7 @@ class Downloader:
                             url=request.url,
                             title=f"Playlist item {i+1}/{total_videos}",
                             percentage=(i / total_videos) * 100,
+                            id=id
                         )
                         progress_callback(overall_progress)
 
@@ -524,10 +529,11 @@ class Downloader:
         """Download an entire playlist"""
         if not config:
             config = DownloadConfig()
+        id = get_id(url, config)
 
         # Get playlist info first
         playlist_info = await self.get_playlist_info(url)
-        downloaded_files = []
+        downloaded_files: List[str] = []
 
         for i, video_url in enumerate(playlist_info["entries"]):
             if progress_callback:
@@ -535,6 +541,7 @@ class Downloader:
                     url=url,
                     title=f"Playlist item {i+1}/{len(playlist_info['entries'])}",
                     percentage=(i / len(playlist_info["entries"])) * 100,
+                    id=id
                 )
                 progress_callback(overall_progress)
 
