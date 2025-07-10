@@ -4,6 +4,7 @@ Uses yt-dlp and ffmpeg with automatic binary management
 """
 
 import asyncio
+from asyncio.subprocess import Process
 import json
 import os
 import platform
@@ -15,6 +16,17 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optiona
 import aiofiles
 import aiohttp
 import logging
+
+from asyncyt.exception import (
+    AsyncYTBase,
+    DownloadAlreadyExistsError,
+    DownloadGotCanceledError,
+    DownloadNotFoundError,
+    YtdlpDownloadError,
+    YtdlpGetInfoError,
+    YtdlpPlaylistGetInfoError,
+    YtdlpSearchError,
+)
 
 from .enums import AudioFormat, VideoFormat, Quality
 from .basemodels import (
@@ -31,7 +43,7 @@ from .basemodels import (
     PlaylistResponse,
     HealthResponse,
 )
-from .utils import call_callback, get_unique_filename
+from .utils import call_callback, gen_id, get_unique_filename
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +66,7 @@ class Downloader:
         self.ffmpeg_path = (
             self.bin_dir / "ffmpeg.exe" if system == "windows" else "ffmpeg"
         )
+        self._downloads: Dict[str, Process] = {}
 
     async def setup_binaries_generator(self) -> AsyncGenerator[SetupProgress, Any]:
         """Download and setup yt-dlp and ffmpeg binaries with yield SetupProgress"""
@@ -184,13 +197,13 @@ class Downloader:
                                     )
                             # Verify file size
                             if total > 0 and temp_filepath.stat().st_size != total:
-                                raise Exception(
+                                raise AsyncYTBase(
                                     f"Incomplete download for {filepath.name}: expected {total}, got {temp_filepath.stat().st_size}"
                                 )
                             temp_filepath.rename(filepath)
                             return
                         else:
-                            raise Exception(
+                            raise AsyncYTBase(
                                 f"Failed to download {url}: {response.status}"
                             )
             except Exception as e:
@@ -200,7 +213,7 @@ class Downloader:
                     f"Download attempt {attempt} failed for {url}: {e}. Retrying in {wait}s..."
                 )
                 await asyncio.sleep(wait)
-        raise Exception(f"Failed to download {url} after {max_retries} attempts.")
+        raise AsyncYTBase(f"Failed to download {url} after {max_retries} attempts.")
 
     async def get_video_info(self, url: str) -> VideoInfo:
         """Get video information without downloading"""
@@ -213,7 +226,7 @@ class Downloader:
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            raise Exception(f"Failed to get video info: {stderr.decode()}")
+            raise YtdlpGetInfoError(url, process.returncode, stderr.decode())
 
         data = json.loads(stdout.decode())
         return VideoInfo.from_dict(data)
@@ -231,7 +244,7 @@ class Downloader:
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            raise Exception(f"Search failed: {stderr.decode()}")
+            raise YtdlpSearchError(query, process.returncode, stderr.decode())
 
         results = []
         for line in stdout.decode().strip().split("\n"):
@@ -252,6 +265,9 @@ class Downloader:
         """Download a video with the given configuration"""
         if not config:
             config = DownloadConfig()
+        id = gen_id(url, config)
+        if id in self._downloads:
+            raise DownloadAlreadyExistsError(id)
 
         # Ensure output directory exists
         output_dir = Path(config.output_path)
@@ -271,9 +287,11 @@ class Downloader:
             cwd=output_dir,
         )
 
+        self._downloads[id] = process
+
         output_file: Optional[str] = None
 
-        output = []
+        output: List[str] = []
         # Monitor progress
         async for line in self._read_process_output(process):
             line = line.strip()
@@ -303,22 +321,33 @@ class Downloader:
                 )
                 if not output_file and line.lower().endswith(valid_exts):
                     output_file = line
+        try:
+            returncode = await process.wait()
 
-        returncode = await process.wait()
+            if returncode != 0:
+                raise YtdlpDownloadError(
+                    url=url, output=output, cmd=cmd, error_code=returncode
+                )
 
-        if returncode != 0:
-            raise RuntimeError(
-                f"Download failed for {url}\n"
-                f"CMD: {" ".join(cmd)}\n"
-                f"Return code: {returncode}\n"
-                f"Output:\n" + "\n".join(output)
-            )
+            if progress_callback:
+                progress.status = "finished"
+                progress.percentage = 100.0
+                await call_callback(progress_callback, progress)
+            return output_file  # type: ignore
+        except asyncio.CancelledError:
+            process.kill()
+            await process.wait()
+            raise DownloadGotCanceledError(id)
+        finally:
+            self._downloads.pop(id, None)
 
-        if progress_callback:
-            progress.status = "finished"
-            progress.percentage = 100.0
-            await call_callback(progress_callback, progress)
-        return output_file  # type: ignore
+    async def cancel(self, download_id: str):
+        """cancel the downloading with download_id"""
+        process = self._downloads.pop(download_id, None)
+        if not process:
+            raise DownloadNotFoundError(download_id)
+        process.kill()
+        await process.wait()
 
     async def health_check(self) -> HealthResponse:
         """Check if all binaries are available and working"""
@@ -398,7 +427,6 @@ class Downloader:
 
             # Download the video
             filename = await self.download(request.url, config, progress_callback)
-
             file = Path(filename)
             title = re.sub(r'[\\/:"*?<>|]', "_", video_info.title)
             new_file = get_unique_filename(file, title)
@@ -410,6 +438,8 @@ class Downloader:
                 filename=str(file.absolute()),
                 video_info=video_info,
             )
+        except AsyncYTBase:
+            raise
 
         except Exception as e:
             return DownloadResponse(
@@ -537,7 +567,7 @@ class Downloader:
         stdout, stderr = await process.communicate()
 
         if process.returncode != 0:
-            raise Exception(f"Failed to get playlist info: {stderr.decode()}")
+            raise YtdlpPlaylistGetInfoError(url, process.returncode, stderr.decode())
 
         entries = []
         for line in stdout.decode().strip().split("\n"):
@@ -563,8 +593,14 @@ class Downloader:
         cmd.extend(["--no-warnings", "--progress"])
         # Quality selection
         if config.extract_audio:
-            audio = AudioFormat(config.audio_format).value if config.audio_format else "best"
-            audio = "vorbis" if audio == "ogg" else audio # Somehow it's not ogg but called vorbis??
+            audio = (
+                AudioFormat(config.audio_format).value
+                if config.audio_format
+                else "best"
+            )
+            audio = (
+                "vorbis" if audio == "ogg" else audio
+            )  # Somehow it's not ogg but called vorbis??
             cmd.extend(
                 [
                     "-x",
