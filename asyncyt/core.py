@@ -12,7 +12,18 @@ import re
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Union
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Union,
+    overload,
+)
+from collections.abc import Callable as Callable2
 import aiofiles
 import aiohttp
 import logging
@@ -231,7 +242,7 @@ class Downloader:
         data = json.loads(stdout.decode())
         return VideoInfo.from_dict(data)
 
-    async def search(self, query: str, max_results: int = 10) -> List[VideoInfo]:
+    async def _search(self, query: str, max_results: int = 10) -> List[VideoInfo]:
         """Search for videos"""
         search_url = f"ytsearch{max_results}:{query}"
 
@@ -254,6 +265,57 @@ class Downloader:
 
         return results
 
+    def _get_config(
+        self,
+        *args,
+        **kwargs: Dict[
+            str,
+            Union[
+                str,
+                Optional[DownloadConfig],
+                Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]],
+            ],
+        ],
+    ):
+        url: Optional[str] = None
+        config: Optional[DownloadConfig] = None
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None
+        if "url" in kwargs:
+            url = kwargs.get("url")  # type: ignore
+            if not isinstance(url, str):
+                raise TypeError("url must be str!")
+        if "config" in kwargs:
+            config = kwargs.get("config")  # type: ignore
+            if not isinstance(config, DownloadConfig):
+                raise TypeError("config must be DownloadConfig!")
+        if "progress_callback" in kwargs:
+            progress_callback = kwargs.get("progress_callback")  # type: ignore
+            if not isinstance(progress_callback, Callable2):
+                raise TypeError("progress_callback must be callable!")
+        if "request" in kwargs:
+            request = kwargs.get("request")
+            if not isinstance(request, DownloadRequest):
+                raise TypeError("request must be DownloadRequest!")
+            url = request.url
+            config = request.config
+        for arg in args:
+            if isinstance(arg, str):
+                url = arg
+            elif isinstance(arg, DownloadConfig):
+                config = arg
+            elif isinstance(arg, Callable):
+                progress_callback = arg
+            elif isinstance(arg, DownloadRequest):
+                url = arg.url
+                config = arg.config
+        if not url:
+            raise TypeError("url is a must!")
+
+        return (url, config, progress_callback)
+
+    @overload
     async def download(
         self,
         url: str,
@@ -261,8 +323,19 @@ class Downloader:
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
-    ) -> str:
+    ) -> str: ...
+    @overload
+    async def download(
+        self,
+        request: DownloadRequest,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
+    ) -> str: ...
+
+    async def download(self, *args, **kwargs) -> str:
         """Download a video with the given configuration"""
+        url, config, progress_callback = self._get_config(*args, **kwargs)
         if not config:
             config = DownloadConfig()
         id = get_id(url, config)
@@ -404,21 +477,41 @@ class Downloader:
                 error=str(e),
             )
 
+    @overload
+    async def download_with_response(
+        self,
+        url: str,
+        config: Optional[DownloadConfig] = None,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
+    ) -> DownloadResponse: ...
+    @overload
     async def download_with_response(
         self,
         request: DownloadRequest,
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
-    ) -> DownloadResponse:
+    ) -> DownloadResponse: ...
+    
+    async def download_with_response(self, *args, **kwargs) -> DownloadResponse:
         """Download with API-friendly response format"""
         try:
-            config = request.config or DownloadConfig()
-            id = get_id(request.url, config)
+            url, config, progress_callback = self._get_config(*args, **kwargs)
+            config = config or DownloadConfig()
+            id = get_id(url, config)
 
             # Get video info first
             try:
-                video_info = await self.get_video_info(request.url)
+                video_info = await self.get_video_info(url)
+            except YtdlpGetInfoError as e:
+                return DownloadResponse(
+                    success=False,
+                    message="Failed to get video information",
+                    error=f"error code: {e.error_code}\nOutput: {e.output}",
+                    id=id,
+                )
             except Exception as e:
                 return DownloadResponse(
                     success=False,
@@ -428,7 +521,7 @@ class Downloader:
                 )
 
             # Download the video
-            filename = await self.download(request.url, config, progress_callback)
+            filename = await self.download(url, config, progress_callback)
             file = Path(filename)
             title = re.sub(r'[\\/:"*?<>|]', "_", video_info.title)
             new_file = get_unique_filename(file, title)
@@ -448,11 +541,45 @@ class Downloader:
             return DownloadResponse(
                 success=False, message="Download failed", error=str(e), id=id
             )
+            
+    @overload
+    async def search(
+        self,
+        query: str,
+        *,
+        max_results: int,
+        request: None = None
+    ) -> "SearchResponse": ...
+    
+    @overload
+    async def search(
+        self,
+        query: None,
+        *,
+        max_results: None = None,
+        request: "SearchRequest"
+    ) -> "SearchResponse": ...
 
-    async def search_with_response(self, request: SearchRequest) -> SearchResponse:
+    async def search(
+        self,
+        query: Optional[str],
+        *,
+        max_results: Optional[int] = None,
+        request: Optional["SearchRequest"] = None
+    ) -> SearchResponse:
         """Search with API-friendly response format"""
+        
+        if (request is None and (query is None or max_results is None)) or (
+            request is not None and (query is not None or max_results is not None)
+        ):
+            raise TypeError("Choose either (query and max_results) or request.")
+        
+        if request:
+            query = request.query
+            max_results = request.max_results
+        
         try:
-            results = await self.search(request.query, request.max_results)
+            results = await self._search(query, max_results) # type: ignore
 
             return SearchResponse(
                 success=True,
@@ -490,7 +617,7 @@ class Downloader:
                             url=request.url,
                             title=f"Playlist item {i+1}/{total_videos}",
                             percentage=(i / total_videos) * 100,
-                            id=id
+                            id=id,
                         )
                         progress_callback(overall_progress)
 
@@ -541,7 +668,7 @@ class Downloader:
                     url=url,
                     title=f"Playlist item {i+1}/{len(playlist_info['entries'])}",
                     percentage=(i / len(playlist_info["entries"])) * 100,
-                    id=id
+                    id=id,
                 )
                 progress_callback(overall_progress)
 
