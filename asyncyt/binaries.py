@@ -150,7 +150,7 @@ class BinaryManager:
                     headers["Range"] = f"bytes={resume_pos}-"
 
                 timeout_obj = aiohttp.ClientTimeout(
-                    total=None, sock_connect=30, sock_read=60
+                    total=None, sock_connect=30, sock_read=300
                 )
                 async with aiohttp.ClientSession(timeout=timeout_obj) as session:
                     async with session.get(url, headers=headers) as response:
@@ -168,17 +168,28 @@ class BinaryManager:
                                     if response.status == 206
                                     else int(response.headers.get("Content-Length", 0))
                                 )
-                                async for chunk in response.content.iter_chunked(8192):
+                                chunk_size = 4096
+
+                                async for chunk in response.content.iter_chunked(
+                                    chunk_size
+                                ):
                                     await f.write(chunk)
                                     downloaded += len(chunk)
-                                    percent = (downloaded / total) * 100
+
+                                    # Calculate progress
+                                    if total > 0:
+                                        percent = (downloaded / total) * 100
+                                    else:
+                                        percent = 0
+
                                     yield DownloadFileProgress(
                                         status="downloading",
                                         downloaded_bytes=downloaded,
                                         total_bytes=total,
                                         percentage=percent,
                                     )
-                            # Verify file size
+
+                            # Verify file size (only if we know the expected size)
                             if total > 0 and temp_filepath.stat().st_size != total:
                                 raise AsyncYTBase(
                                     f"Incomplete download for {filepath.name}: expected {total}, got {temp_filepath.stat().st_size}"
@@ -189,13 +200,22 @@ class BinaryManager:
                             raise AsyncYTBase(
                                 f"Failed to download {url}: {response.status}"
                             )
+            except asyncio.TimeoutError as e:
+                attempt += 1
+                wait = min(backoff**attempt, 60)  # Cap wait time at 60 seconds
+                logger.warning(
+                    f"Download attempt {attempt} timed out for {url}: {e}. Retrying in {wait}s..."
+                )
+                await asyncio.sleep(wait)
+
             except Exception as e:
                 attempt += 1
-                wait = backoff**attempt
+                wait = min(backoff**attempt, 60)  # Cap wait time at 60 seconds
                 logger.warning(
                     f"Download attempt {attempt} failed for {url}: {e}. Retrying in {wait}s..."
                 )
                 await asyncio.sleep(wait)
+
         raise AsyncYTBase(f"Failed to download {url} after {max_retries} attempts.")
 
     async def health_check(self) -> HealthResponse:
