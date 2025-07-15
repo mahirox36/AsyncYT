@@ -4,26 +4,16 @@ Uses yt-dlp and ffmpeg with automatic binary management
 """
 
 import asyncio
-from asyncio.subprocess import Process
-import json
 import os
 import platform
-import re
 import shutil
 import zipfile
 from pathlib import Path
 from typing import (
     Any,
     AsyncGenerator,
-    Awaitable,
-    Callable,
-    Dict,
     List,
-    Optional,
-    Union,
-    overload,
 )
-from collections.abc import Callable as Callable2
 import aiofiles
 import aiohttp
 import logging
@@ -38,13 +28,6 @@ from asyncyt.basemodels import (
 from asyncyt.enums import AudioFormat, Quality, VideoFormat
 from asyncyt.exceptions import (
     AsyncYTBase,
-    DownloadAlreadyExistsError,
-    DownloadGotCanceledError,
-    DownloadNotFoundError,
-    YtdlpDownloadError,
-    YtdlpGetInfoError,
-    YtdlpPlaylistGetInfoError,
-    YtdlpSearchError,
 )
 
 logger = logging.getLogger(__name__)

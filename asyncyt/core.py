@@ -6,15 +6,10 @@ Uses yt-dlp and ffmpeg with automatic binary management
 import asyncio
 from asyncio.subprocess import Process
 import json
-import os
-import platform
 import re
-import shutil
-import zipfile
 from pathlib import Path
 from typing import (
     Any,
-    AsyncGenerator,
     Awaitable,
     Callable,
     Dict,
@@ -24,8 +19,6 @@ from typing import (
     overload,
 )
 from collections.abc import Callable as Callable2
-import aiofiles
-import aiohttp
 import logging
 
 from asyncyt.exceptions import (
@@ -39,10 +32,7 @@ from asyncyt.exceptions import (
     YtdlpSearchError,
 )
 
-from .enums import AudioFormat, VideoFormat, Quality
 from .basemodels import (
-    DownloadFileProgress,
-    SetupProgress,
     VideoInfo,
     DownloadConfig,
     DownloadProgress,
@@ -52,7 +42,6 @@ from .basemodels import (
     DownloadResponse,
     SearchResponse,
     PlaylistResponse,
-    HealthResponse,
 )
 from .utils import call_callback, get_id, get_unique_filename
 from .binaries import BinaryManager
