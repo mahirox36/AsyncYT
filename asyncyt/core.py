@@ -331,20 +331,16 @@ class Downloader(BinaryManager):
             )
 
     @overload
-    async def search(
-        self, query: str, *, max_results: int, request: None = None
-    ) -> "SearchResponse": ...
+    async def search(self, query: str, max_results: int) -> "SearchResponse": ...
 
     @overload
-    async def search(
-        self, query: None, *, max_results: None = None, request: "SearchRequest"
-    ) -> "SearchResponse": ...
+    async def search(self, *, request: "SearchRequest") -> "SearchResponse": ...
 
     async def search(
         self,
-        query: Optional[str],
-        *,
+        query: Optional[str] = None,
         max_results: Optional[int] = None,
+        *,
         request: Optional["SearchRequest"] = None,
     ) -> SearchResponse:
         """Search with API-friendly response format"""
@@ -497,5 +493,6 @@ class Downloader(BinaryManager):
                 else "Empty Playlist"
             ),
         }
-    #TODO: Add Cancel Function for playlist 
-    #TODO: also add basemodel for just the playlist downloading and the get_playlist_info
+
+    # TODO: Add Cancel Function for playlist
+    # TODO: also add basemodel for just the playlist downloading and the get_playlist_info
