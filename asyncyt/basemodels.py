@@ -15,7 +15,7 @@ __all__ = [
     "PlaylistResponse",
     "HealthResponse",
     "DownloadFileProgress",
-    "SetupProgress"
+    "SetupProgress",
 ]
 
 
@@ -156,6 +156,7 @@ class DownloadProgress(BaseModel):
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
 
+
 class DownloadFileProgress(BaseModel):
     """Progress information for File downloads"""
 
@@ -171,12 +172,14 @@ class DownloadFileProgress(BaseModel):
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
 
+
 class SetupProgress(BaseModel):
     """Progress information for File downloads"""
 
     file: str = "yt-dlp"
-    download_file_progress: DownloadFileProgress= Field(description="the progress of the file being downloaded")
-
+    download_file_progress: DownloadFileProgress = Field(
+        description="the progress of the file being downloaded"
+    )
 
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
