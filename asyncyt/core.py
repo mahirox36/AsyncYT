@@ -331,7 +331,7 @@ class Downloader(BinaryManager):
             )
 
     @overload
-    async def search(self, query: str, max_results: int) -> "SearchResponse": ...
+    async def search(self, query: str, max_results: Optional[int] = None) -> "SearchResponse": ...
 
     @overload
     async def search(self, *, request: "SearchRequest") -> "SearchResponse": ...
@@ -345,10 +345,12 @@ class Downloader(BinaryManager):
     ) -> SearchResponse:
         """Search with API-friendly response format"""
 
-        if (request is None and (query is None or max_results is None)) or (
-            request is not None and (query is not None or max_results is not None)
-        ):
-            raise TypeError("Choose either (query and max_results) or request.")
+        if request is not None:
+            if query is not None or max_results is not None:
+                raise TypeError("If you provide request, you cannot provide query, or max_results.")
+        else:
+            if query is None:
+                raise TypeError("You must provide query when request is not given.")
 
         if request:
             query = request.query
@@ -373,10 +375,11 @@ class Downloader(BinaryManager):
     async def download_playlist(
         self,
         url: str,
-        *,
-        config: Optional[DownloadConfig],
-        max_videos: Optional[int],
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+        config: Optional[DownloadConfig] = None,
+        max_videos: Optional[int] = None,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
     ) -> PlaylistResponse: ...
 
     @overload
@@ -384,26 +387,28 @@ class Downloader(BinaryManager):
         self,
         *,
         request: PlaylistRequest,
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
     ) -> PlaylistResponse: ...
 
     async def download_playlist(
         self,
         url: Optional[str] = None,
-        *,
         config: Optional[DownloadConfig] = None,
         max_videos: Optional[int] = None,
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
         request: Optional[PlaylistRequest] = None,
     ) -> PlaylistResponse:
         """Download playlist with API-friendly response format"""
-        if (
-            request is None and (url is None or config is None or max_videos is None)
-        ) or (
-            request is not None
-            and (url is not None or config is not None or max_videos is not None)
-        ):
-            raise TypeError("Choose either (url, config, and max_videos) or request.")
+        if request is not None:
+            if url is not None or config is not None or max_videos is not None:
+                raise TypeError("If you provide request, you cannot provide url, config, or max_videos.")
+        else:
+            if url is None:
+                raise TypeError("You must provide url when request is not given.")
 
         if request:
             url = request.url
