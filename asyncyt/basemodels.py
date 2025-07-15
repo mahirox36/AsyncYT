@@ -274,6 +274,15 @@ class SearchResponse(BaseModel):
     total_results: int = 0
     error: Optional[str] = None
 
+    def __getitem__(self, item):
+        return self.results[item]
+
+    def __len__(self):
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -302,6 +311,15 @@ class PlaylistResponse(BaseModel):
     total_videos: int = 0
     successful_downloads: int = 0
     error: Optional[str] = None
+
+    def __getitem__(self, item):
+        return self.downloaded_files[item]
+
+    def __len__(self):
+        return len(self.downloaded_files)
+
+    def __iter__(self):
+        return iter(self.downloaded_files)
 
 
 class HealthResponse(BaseModel):
