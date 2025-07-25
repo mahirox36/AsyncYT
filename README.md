@@ -1,7 +1,7 @@
 # AsyncYT
-![PyPI](https://img.shields.io/pypi/v/asyncyt)
-![Downloads](https://img.shields.io/pypi/dm/asyncyt)
-![License](https://img.shields.io/pypi/l/asyncyt)
+![PyPI](https://img.shields.io/pypi/v/asyncyt?style=for-the-badge)
+![Downloads](https://img.shields.io/pypi/dm/asyncyt?style=for-the-badge)
+![License](https://img.shields.io/pypi/l/asyncyt?style=for-the-badge)
 
 **AsyncYT** is a fully async, high-performance Any website downloader powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) and `ffmpeg`.  
 It comes with auto binary setup, progress tracking, playlist support, search, and clean API models using `pydantic`.
