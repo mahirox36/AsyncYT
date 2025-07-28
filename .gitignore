@@ -4,3 +4,4 @@ downloads/
 .pytest_cache/
 dist/
 *.bat
+rw*r.py

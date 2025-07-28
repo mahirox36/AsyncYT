@@ -4,35 +4,47 @@ Uses yt-dlp and ffmpeg with automatic binary management
 """
 
 import asyncio
+from asyncio.subprocess import Process
+from collections.abc import Callable
+from json import loads
 import os
 import platform
+import re
 import shutil
 import zipfile
 from pathlib import Path
 from typing import (
     Any,
     AsyncGenerator,
+    Awaitable,
+    Dict,
     List,
+    Optional,
+    Union,
 )
 import aiofiles
 import aiohttp
 import logging
 
-from asyncyt.basemodels import (
-    DownloadConfig,
-    DownloadFileProgress,
-    DownloadProgress,
-    HealthResponse,
-    SetupProgress,
+from .utils import (
+    call_callback,
+    delete_file,
+    get_id,
+    is_compatible,
+    suggest_compatible_formats,
 )
-from asyncyt.enums import AudioFormat, Quality, VideoFormat
-from asyncyt.exceptions import (
+from .basemodels import *
+from .enums import *
+from .exceptions import (
     AsyncYTBase,
+    CodecCompatibilityError,
+    FFmpegOutputExistsError,
+    FFmpegProcessingError,
 )
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BinaryManager"]
+__all__ = ["BinaryManager", "AsyncFFmpeg"]
 
 
 class BinaryManager:
@@ -50,14 +62,20 @@ class BinaryManager:
         self.ffmpeg_path = (
             self.bin_dir / "ffmpeg.exe" if system == "windows" else "ffmpeg"
         )
+        self.ffprobe_path = (
+            self.bin_dir / "ffprobe.exe" if system == "windows" else "ffprobe"
+        )
+        self._downloads: Dict[str, Process] = {}
+        self._setup_only_ffmpeg: bool = False
 
     async def setup_binaries_generator(self) -> AsyncGenerator[SetupProgress, Any]:
         """Download and setup yt-dlp and ffmpeg binaries with yield SetupProgress"""
         self.bin_dir.mkdir(exist_ok=True)
 
         # Setup yt-dlp
-        async for progress in self._setup_ytdlp():
-            yield progress
+        if not self._setup_only_ffmpeg:
+            async for progress in self._setup_ytdlp():
+                yield progress
 
         # Setup ffmpeg
         async for progress in self._setup_ffmpeg():
@@ -70,8 +88,9 @@ class BinaryManager:
         self.bin_dir.mkdir(exist_ok=True)
 
         # Setup yt-dlp
-        async for _ in self._setup_ytdlp():
-            pass
+        if not self._setup_only_ffmpeg:
+            async for _ in self._setup_ytdlp():
+                pass
 
         # Setup ffmpeg
         async for _ in self._setup_ffmpeg():
@@ -99,39 +118,71 @@ class BinaryManager:
     async def _setup_ffmpeg(self) -> AsyncGenerator[SetupProgress, Any]:
         """Download ffmpeg binary"""
         system = platform.system().lower()
-
-        if system == "windows":
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        has_ffmpeg_ffprobe = ffmpeg and ffprobe
+        if system == "windows" and has_ffmpeg_ffprobe:
+            self.ffmpeg_path = ffmpeg
+            self.ffprobe_path = ffprobe
+            yield SetupProgress(
+                file="ffmpeg",
+                download_file_progress=DownloadFileProgress(
+                    status=ProgressStatus.COMPLETED,
+                    downloaded_bytes=0,
+                    total_bytes=0,
+                    percentage=100,
+                ),
+            )
+            return
+        elif system == "windows" and not has_ffmpeg_ffprobe:
             self.ffmpeg_path = self.bin_dir / "ffmpeg.exe"
+            self.ffprobe_path = self.bin_dir / "ffprobe.exe"
 
-            if not self.ffmpeg_path.exists():
+            if not self.ffmpeg_path.exists() or not self.ffprobe_path.exists():
                 logger.info(f"Downloading ffmpeg for Windows...")
                 url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-n7.1-latest-win64-lgpl-7.1.zip"
                 temp_file = self.bin_dir / "ffmpeg.zip"
 
                 async for progress in self._download_file(url, temp_file):
                     yield SetupProgress(file="ffmpeg", download_file_progress=progress)
-                progress.status = "extracting"
+                progress.status = ProgressStatus.EXTRACTING
                 yield SetupProgress(file="ffmpeg", download_file_progress=progress)
                 await self._extract_ffmpeg_windows(temp_file)
                 temp_file.unlink()
-
+        elif ffmpeg:
+            self.ffmpeg_path = ffmpeg
+            yield SetupProgress(
+                file="ffmpeg",
+                download_file_progress=DownloadFileProgress(
+                    status=ProgressStatus.COMPLETED,
+                    downloaded_bytes=0,
+                    total_bytes=0,
+                    percentage=100,
+                ),
+            )
+            return
         else:
-            # For macOS, we'll check if ffmpeg is available via Homebrew
-            if shutil.which("ffmpeg"):
-                self.ffmpeg_path = "ffmpeg"
-            else:
-                logger.warning(
-                    "ffmpeg not found. Please install via your package manager"
-                )
+            self.ffmpeg_path = None
+            logger.warning("ffmpeg not found. Please install via your package manager")
 
     async def _extract_ffmpeg_windows(self, zip_path: Path) -> None:
-        """Extract ffmpeg from Windows zip file"""
+        """Extract only missing ffmpeg-related binaries from the Windows zip file."""
+        ffmpeg_exists = shutil.which("ffmpeg") is not None
+        ffprobe_exists = shutil.which("ffprobe") is not None
+
         with zipfile.ZipFile(zip_path, "r") as zip_ref:
             for file_info in zip_ref.infolist():
-                if file_info.filename.endswith(("ffmpeg.exe", "ffprobe.exe")):
-                    # Extract to bin directory
-                    file_info.filename = os.path.basename(file_info.filename)
-                    zip_ref.extract(file_info, self.bin_dir)
+                filename = os.path.basename(file_info.filename)
+                if filename == "ffmpeg.exe":
+                    if ffmpeg_exists:
+                        continue
+                elif filename == "ffprobe.exe":
+                    if ffprobe_exists:
+                        continue
+                else:
+                    continue
+                file_info.filename = filename
+                zip_ref.extract(file_info, self.bin_dir)
 
     async def _download_file(
         self, url: str, filepath: Path, max_retries: int = 5
@@ -183,7 +234,7 @@ class BinaryManager:
                                         percent = 0
 
                                     yield DownloadFileProgress(
-                                        status="downloading",
+                                        status=ProgressStatus.DOWNLOADING,
                                         downloaded_bytes=downloaded,
                                         total_bytes=total,
                                         percentage=percent,
@@ -219,7 +270,17 @@ class BinaryManager:
         raise AsyncYTBase(f"Failed to download {url} after {max_retries} attempts.")
 
     async def health_check(self) -> HealthResponse:
-        """Check if all binaries are available and working"""
+        """
+        Performs a health check on the required binaries (yt-dlp and ffmpeg).
+        Asynchronously verifies the availability of yt-dlp and ffmpeg by attempting to execute them
+        with their respective version commands. Determines the health status based on the results.
+        Returns:
+            HealthResponse: An object containing the health status ("healthy", "degraded", or "unhealthy"),
+            the availability of yt-dlp and ffmpeg, the binaries path, and any error encountered.
+        Raises:
+            Exception: If an unexpected error occurs during the health check process.
+        """
+
         try:
             # Check yt-dlp
             ytdlp_available = False
@@ -283,28 +344,18 @@ class BinaryManager:
         cmd.extend(["--no-warnings", "--progress"])
         # Quality selection
         if config.extract_audio:
-            audio = (
-                AudioFormat(config.audio_format).value
-                if config.audio_format
-                else "best"
-            )
-            audio = (
-                "vorbis" if audio == "ogg" else audio
-            )  # Somehow it's not ogg but called vorbis??
             cmd.extend(
                 [
                     "-x",
                     "--audio-format",
-                    audio,
+                    "best",
                 ]
             )
         else:
             quality = Quality(config.quality)
 
-            format_selector = ""
-
             if quality == Quality.BEST:
-                format_selector = "bv*+ba/b"
+                format_selector = "bestvideo[codec=h264]+bestaudio/bestvideo+bestaudio"
             elif quality == Quality.WORST:
                 format_selector = "worst"
             elif quality == Quality.AUDIO_ONLY:
@@ -320,10 +371,6 @@ class BinaryManager:
 
             cmd.extend(["-f", format_selector])
 
-        # Output format
-        if config.video_format and not config.extract_audio:
-            cmd.extend(["--recode-video", VideoFormat(config.video_format).value])
-
         # Filename template
         if config.custom_filename:
             cmd.extend(["-o", config.custom_filename])
@@ -338,7 +385,7 @@ class BinaryManager:
 
         # Additional options
         if config.write_thumbnail:
-            cmd.append("--write-thumbnail")
+            cmd.extend(["--write-thumbnail", "--convert-thumbnails", "jpg"])
         if config.embed_thumbnail:
             cmd.append("--embed-thumbnail")
         if config.write_info_json:
@@ -435,6 +482,44 @@ class BinaryManager:
             except (ValueError, IndexError) as e:
                 pass
 
+    async def _parse_ffmpeg_progress(
+        self, line: str, progress: DownloadProgress, callback, media_info: MediaInfo
+    ) -> None:
+        """Parse progress information from ffmpeg output"""
+        line = line.strip()
+        if "progress=" in line:
+            await call_callback(callback, progress)
+        try:
+            patterns = {
+                "frame": re.compile(r"frame=(\d+)"),
+                "fps": re.compile(r"fps=([\d\.]+)"),
+                "bitrate": re.compile(r"bitrate=(\d+)"),
+                "total_size": re.compile(r"total_size=(\d+)"),
+                "out_time_us": re.compile(r"out_time_us=(\d+)"),
+                "speed": re.compile(r"speed=([\d\.]+)"),
+                "progress": re.compile(r"progress=(\d+)"),
+            }
+            for key_name, regex in patterns.items():
+                key_matched = regex.search(line)
+                if key_matched:
+                    value = key_matched.group(1)
+                    if key_name == "out_time_us":
+                        value = int(value)
+                        progress.ffmpeg_progress[key_name] = value
+                        progress.percentage = round(
+                            (value / 1_000_000) / media_info.duration * 100, 2
+                        )
+                        continue
+                    if isinstance(progress.ffmpeg_progress[key_name], float):
+                        progress.ffmpeg_progress[key_name] = float(value)
+                    elif isinstance(progress.ffmpeg_progress[key_name], int):
+                        progress.ffmpeg_progress[key_name] = int(value)
+                    else:
+                        progress.ffmpeg_progress[key_name] = str(value)
+            return
+        except (ValueError, IndexError) as e:
+            pass
+
     def _parse_size(self, size_str: str) -> int:
         """Parse size string (e.g., '10.5MiB', '1.2GB') to bytes"""
         if not size_str:
@@ -481,3 +566,254 @@ class BinaryManager:
                 return int(time_str)
         except ValueError:
             return 0
+
+
+class AsyncFFmpeg(BinaryManager):
+    def __init__(self):
+        super().__init__()
+        self._setup_only_ffmpeg = True
+
+    async def get_file_info(self, file_path: str) -> MediaInfo:
+        """
+        Asynchronously retrieves media file information using ffprobe.
+        Args:
+            file_path (str): Path to the media file to be analyzed.
+        Returns:
+            MediaInfo: An object containing metadata about the media file, including format details and stream information.
+        Raises:
+            FFmpegProcessingError: If ffprobe fails to process the file or returns a non-zero exit code.
+        Notes:
+            - Requires ffprobe to be available at self.ffprobe_path.
+            - Parses output as JSON and extracts format and stream metadata.
+        """
+
+        cmd = [
+            str(self.ffprobe_path),
+            "-v",
+            "error",
+            "-show_entries",
+            "format=filename,format_name,format_long_name,duration,size,bit_rate:stream=index,codec_name,codec_type,width,height,bit_rate,sample_rate,channels:stream_tags=language",
+            "-of",
+            "json",
+            file_path,
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            raise FFmpegProcessingError(
+                input_file=file_path,
+                error_code=process.returncode,
+                cmd=cmd,
+                output=stderr.decode(),
+            )
+
+        data: dict = loads(stdout.decode())
+
+        # Parse streams
+        streams = []
+        for s in data.get("streams", []):
+            streams.append(
+                StreamInfo(
+                    index=s.get("index"),
+                    codec_name=s.get("codec_name"),
+                    codec_type=s.get("codec_type"),
+                    width=s.get("width"),
+                    height=s.get("height"),
+                    bit_rate=int(s["bit_rate"]) if s.get("bit_rate") else None,
+                    sample_rate=int(s["sample_rate"]) if s.get("sample_rate") else None,
+                    channels=s.get("channels"),
+                    language=(s.get("tags") or {}).get("language"),
+                )
+            )
+
+        fmt = data.get("format", {})
+        return MediaInfo(
+            filename=fmt.get("filename", ""),
+            format_name=fmt.get("format_name", ""),
+            format_long_name=fmt.get("format_long_name", ""),
+            duration=float(fmt["duration"]) if fmt.get("duration") else 0.0,
+            size=int(fmt["size"]) if fmt.get("size") else 0,
+            bit_rate=int(fmt["bit_rate"]) if fmt.get("bit_rate") else 0,
+            streams=streams,
+        )
+
+    async def process(
+        self,
+        file: str,
+        ffmpeg_config: FFmpegConfig,
+        config: Optional[DownloadConfig] = None,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
+        progress: Optional[DownloadProgress] = None,
+        url: Optional[str] = None,
+    ):
+        """
+        Asynchronously processes a media file using FFmpeg, handling format conversion, codec compatibility, and progress reporting.
+        Args:
+            file (str): Path to the input media file.
+            ffmpeg_config (FFmpegConfig): Configuration object for FFmpeg processing.
+            config (Optional[DownloadConfig]): Download configuration, including output path and format settings.
+            progress_callback (Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]): Callback function to report progress updates.
+            original_progress (Optional[DownloadProgress]): Initial progress state, if available.
+            url (Optional[str]): Source URL of the media file.
+        Returns:
+            str: Filename of the processed output file.
+        Raises:
+            CodecCompatibilityError: If the desired codec and format are incompatible and error raising is enabled.
+            FFmpegOutputExistsError: If the output file already exists and overwriting is disabled.
+            FFmpegProcessingError: If FFmpeg returns a non-zero exit code during processing.
+        """
+
+        if not progress:
+            progress = DownloadProgress(url="", percentage=0, id="")
+
+        if config and url:
+            output_dir = Path(config.output_path)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            embed_thumbnail = False
+            write_thumbnail = False
+            if config.embed_thumbnail:
+                embed_thumbnail = True
+                write_thumbnail = config.write_thumbnail
+
+            if embed_thumbnail:
+                thumbnail_path = str(Path(file).with_suffix(".jpg"))
+                ffmpeg_config.add_thumbnail_input(thumbnail_path)
+            id = get_id(url, config)
+            ffmpeg_config.video_format = None
+            ffmpeg_config.output_filename = Path(file).stem
+            ffmpeg_config.add_media_input(file)
+            original_ext = os.path.splitext(os.path.basename(file))[1][1:].lower()
+            if not config.extract_audio:
+                ext = VideoFormat(original_ext)
+                needs_format = (
+                    config.video_format is not None and ext != config.video_format
+                )
+            else:
+                ext = AudioFormat(original_ext)
+                needs_format = (
+                    config.audio_format != ext if config.audio_format else False
+                )
+
+            # Return early if no post-processing needed
+            if ffmpeg_config.is_empty and not needs_format:
+                return file
+
+            # Set up FFmpeg format conversion if needed
+            if needs_format and not config.extract_audio:
+                ffmpeg_config.video_format = config.video_format
+            if needs_format and config.extract_audio:
+                ffmpeg_config.audio_codec = ffmpeg_config.get_audio_codec(
+                    AudioFormat(config.audio_format)
+                )
+
+            media_info = await self.get_file_info(file)
+            IMAGE_CODECS = {
+                "png",
+                "mjpeg",
+                "bmp",
+                "tiff",
+                "gif",
+                "jpeg2000",
+                "rawvideo",
+            }
+            for stream in media_info.streams:
+                if stream.codec_type == "video" and stream.codec_name in IMAGE_CODECS:
+                    ffmpeg_config.index_thumbnail_input(stream.index)
+                if (
+                    stream.codec_type == "video"
+                    and stream.codec_name not in IMAGE_CODECS
+                ):
+                    current_codec = VideoCodec[
+                        stream.codec_name.upper()  # pyright: ignore[reportOptionalMemberAccess]
+                    ]
+
+                    if (
+                        ffmpeg_config.video_codec == VideoCodec.COPY
+                        and ffmpeg_config.video_format
+                    ):
+                        if not is_compatible(ffmpeg_config.video_format, current_codec):
+                            if not ffmpeg_config.no_codec_compatibility_error:
+                                raise CodecCompatibilityError(
+                                    current_codec, ffmpeg_config.video_format
+                                )
+                            ffmpeg_config.video_format = suggest_compatible_formats(
+                                current_codec
+                            )[0]
+
+                    if (
+                        ffmpeg_config.video_codec != VideoCodec.COPY
+                        and ffmpeg_config.video_format
+                    ):
+                        desired_codec = ffmpeg_config.video_codec
+                        if not is_compatible(ffmpeg_config.video_format, desired_codec):
+                            if not ffmpeg_config.no_codec_compatibility_error:
+                                raise CodecCompatibilityError(
+                                    desired_codec, ffmpeg_config.video_format
+                                )
+                            ffmpeg_config.video_format = suggest_compatible_formats(
+                                current_codec
+                            )[0]
+
+            # Start FFmpeg processing
+            if progress_callback:
+                progress.status = ProgressStatus.ENCODING
+                progress.percentage = 0
+
+            ffmpeg_config.output_path = str(output_dir.absolute())
+        ffmpeg_cmd = ffmpeg_config.build_command()
+        output_file_path = (
+            Path(ffmpeg_config.output_path) / ffmpeg_config.get_output_filename()
+        )
+        if not ffmpeg_config.overwrite and output_file_path.exists():
+            raise FFmpegOutputExistsError(str(output_file_path.absolute()))
+
+        ffmpeg_process = await asyncio.create_subprocess_exec(
+            *ffmpeg_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            cwd=output_dir,
+        )
+
+        if config and url:
+            self._downloads[id] = ffmpeg_process
+
+        ffmpeg_output: List[str] = []
+
+        # Monitor FFmpeg progress
+        async for line in self._read_process_output(ffmpeg_process):
+            line = line.strip()
+            ffmpeg_output.append(line)
+
+            if line and progress_callback:
+                await self._parse_ffmpeg_progress(
+                    line, progress, progress_callback, media_info
+                )
+
+        ffmpeg_returncode = await ffmpeg_process.wait()
+
+        if ffmpeg_returncode != 0:
+            raise FFmpegProcessingError(
+                input_file=file,
+                output=ffmpeg_output,
+                cmd=ffmpeg_cmd,
+                error_code=ffmpeg_returncode,
+            )
+
+        if progress_callback:
+            progress.status = ProgressStatus.COMPLETED
+            progress.percentage = 100.0
+            await call_callback(progress_callback, progress)
+
+        if ffmpeg_config.delete_source:
+            await delete_file(file)
+        if config and not write_thumbnail and embed_thumbnail:
+            await delete_file(thumbnail_path)
+
+        return ffmpeg_config.get_output_filename()

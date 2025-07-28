@@ -1,18 +1,18 @@
 from os.path import join
 from asyncyt import (
-    Downloader,
+    AsyncYT,
     DownloadConfig,
     DownloadProgress,
     Quality,
     DownloadRequest,
-    VideoFormat
+    VideoFormat,
 )
 from asyncio import run
 
 
 async def main() -> None:
     print("Starting initialization...")
-    downloader = Downloader()
+    downloader = AsyncYT()
     await downloader.setup_binaries()
     link = input("Enter a URL\n--> ")
     if not link.startswith("http"):

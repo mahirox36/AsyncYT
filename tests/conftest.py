@@ -1,9 +1,10 @@
 # tests/conftest.py
 import pytest
-from asyncyt import Downloader
+from asyncyt import AsyncYT
+
 
 @pytest.fixture(scope="session")
 async def downloader():
-    d = Downloader()
+    d = AsyncYT()
     await d.setup_binaries()
     return d
