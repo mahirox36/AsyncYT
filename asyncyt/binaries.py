@@ -422,6 +422,7 @@ class BinaryManager:
             ]
         )
         cmd.append("--no-update")
+        cmd.append("--no-playlist")
         cmd.append("--newline")
         cmd.append("--restrict-filenames")
         cmd.extend(["--print", "after_move:filepath"])
