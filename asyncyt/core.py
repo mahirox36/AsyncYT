@@ -33,7 +33,7 @@ class AsyncYT(AsyncFFmpeg):
     """Main downloader class with async support"""
 
     def __init__(self):
-        super().__init__()
+        super().__init__(setup_only_ffmpeg=False)
 
     async def get_video_info(self, url: str) -> VideoInfo:
         """

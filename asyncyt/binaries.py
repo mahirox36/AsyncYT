@@ -570,9 +570,9 @@ class BinaryManager:
 
 
 class AsyncFFmpeg(BinaryManager):
-    def __init__(self):
+    def __init__(self, setup_only_ffmpeg: bool = True):
         super().__init__()
-        self._setup_only_ffmpeg = True
+        self._setup_only_ffmpeg = setup_only_ffmpeg
 
     async def get_file_info(self, file_path: str) -> MediaInfo:
         """
