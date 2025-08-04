@@ -26,6 +26,8 @@ import aiofiles
 import aiohttp
 import logging
 
+from ._version import __version__
+
 from .utils import (
     call_callback,
     delete_file,
@@ -368,6 +370,7 @@ class BinaryManager:
                 yt_dlp_available=ytdlp_available,
                 ffmpeg_available=ffmpeg_available,
                 binaries_path=str(self.bin_dir),
+                version=__version__,
             )
 
         except Exception as e:
@@ -376,6 +379,7 @@ class BinaryManager:
                 yt_dlp_available=False,
                 ffmpeg_available=False,
                 error=str(e),
+                version=__version__,
             )
 
     async def _build_download_command(

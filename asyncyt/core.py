@@ -4,23 +4,25 @@ Uses yt-dlp and ffmpeg with automatic binary management
 """
 
 import asyncio
-from asyncio.subprocess import Process
 from json import loads
 import os
 import re
 from pathlib import Path
+import shutil
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, overload
 from collections.abc import Callable as Callable2
 import logging
 import warnings
+import tempfile
 
-from .enums import ProgressStatus, VideoFormat
+from .enums import ProgressStatus
 from .exceptions import *
 from .basemodels import *
 from .utils import (
     call_callback,
     get_id,
     get_unique_filename,
+    get_unique_path,
 )
 from .binaries import AsyncFFmpeg
 
@@ -193,7 +195,7 @@ class AsyncYT(AsyncFFmpeg):
 
         :param args: url (str) or request (DownloadRequest)
         :param kwargs: config (Optional[DownloadConfig]), progress_callback (Optional[Callable])
-        :return: Path to the processed output file.
+        :return: The filename of the output File.
         :rtype: str
         :raises DownloadAlreadyExistsError: If a download with the same ID is already in progress.
         :raises YtdlpDownloadError: If yt-dlp returns a non-zero exit code.
@@ -213,6 +215,10 @@ class AsyncYT(AsyncFFmpeg):
         # Ensure output directory exists
         output_dir = Path(config.output_path)
         output_dir.mkdir(parents=True, exist_ok=True)
+        temp_dir = tempfile.TemporaryDirectory()
+        temp_path = Path(temp_dir.name)
+        print(temp_path)
+        config.output_path = str(temp_path.absolute())
 
         if not self.ffmpeg_path:
             raise FileNotFoundError("FFmpeg isn't installed")
@@ -238,7 +244,7 @@ class AsyncYT(AsyncFFmpeg):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                cwd=output_dir,
+                cwd=temp_path,
             )
 
             self._downloads[id] = process
@@ -305,6 +311,27 @@ class AsyncYT(AsyncFFmpeg):
                 progress,
                 url,
             )
+
+            config.output_path = str(output_dir)
+
+            for item in temp_path.iterdir():
+                dest_path = output_dir / item.name
+
+                if dest_path.exists():
+                    if config.ffmpeg_config.overwrite:
+                        destination = dest_path
+                    else:
+                        destination = get_unique_path(output_dir, item.name)
+                        destination = Path(destination)
+                else:
+                    destination = dest_path
+
+                try:
+                    shutil.move(str(item), str(destination))
+                except Exception as e:
+                    print(f"Failed to move {item} to {destination}: {e}")
+
+            temp_dir.cleanup()
 
             return result
 

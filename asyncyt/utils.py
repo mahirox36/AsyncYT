@@ -21,6 +21,7 @@ __all__ = [
     "is_audio_compatible",
     "suggest_audio_compatible_formats",
     "delete_file",
+    "get_unique_path",
 ]
 
 
@@ -238,3 +239,28 @@ async def delete_file(path: str):
     :type path: str
     """
     await asyncio.to_thread(os.remove, path)
+
+
+def get_unique_path(dir: Path, name: str) -> Path:
+    """
+    Get Unique Path if path exists
+
+    :param dir: The dir of the file
+    :type dir: Path
+    :param name: the Original File name
+    :type name: str
+    """
+    base = dir / name
+    if not base.exists():
+        return base
+
+    stem = base.stem
+    suffix = base.suffix
+    counter = 2
+
+    while True:
+        new_name = f"{stem} ({counter}){suffix}"
+        candidate = dir / new_name
+        if not candidate.exists():
+            return candidate
+        counter += 1

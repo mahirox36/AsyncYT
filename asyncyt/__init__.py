@@ -9,3 +9,4 @@ from .enums import *
 from .exceptions import *
 from .utils import *
 from .binaries import AsyncFFmpeg
+from ._version import __version__
