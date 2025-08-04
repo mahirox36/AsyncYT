@@ -30,20 +30,34 @@ __all__ = ["AsyncYT", "Downloader"]
 
 
 class AsyncYT(AsyncFFmpeg):
-    """Main downloader class with async support"""
+    """
+    AsyncYT: Asynchronous YouTube Downloader and Searcher
 
-    def __init__(self):
-        super().__init__(setup_only_ffmpeg=False)
+    This class provides asynchronous methods for downloading YouTube videos, playlists, and searching for videos using yt-dlp and FFmpeg. It supports progress tracking, flexible configuration, and API-friendly response formats.
+
+    :param bin_dir: Path to the directory containing yt-dlp and FFmpeg binaries.
+    :type bin_dir: Optional[str | Path]
+    """
+
+    def __init__(self, bin_dir: Optional[str | Path] = None):
+        """
+        Initialize the AsyncYT instance.
+
+        :param bin_dir: Directory path for binary files (yt-dlp, FFmpeg).
+        :type bin_dir: Optional[str | Path]
+        """
+
+        super().__init__(setup_only_ffmpeg=False, bin_dir=bin_dir)
 
     async def get_video_info(self, url: str) -> VideoInfo:
         """
-        Asynchronously retrieves video information from a given URL using yt-dlp.
-        Args:
-            url (str): The URL of the video to retrieve information for.
-        Returns:
-            VideoInfo: An object containing the video's metadata.
-        Raises:
-            YtdlpGetInfoError: If yt-dlp fails to retrieve video information.
+        Asynchronously retrieve video information from a given URL using yt-dlp.
+
+        :param url: The URL of the video to retrieve information for.
+        :type url: str
+        :return: VideoInfo object containing the video's metadata.
+        :rtype: VideoInfo
+        :raises YtdlpGetInfoError: If yt-dlp fails to retrieve video information.
         """
 
         cmd = [str(self.ytdlp_path), "--dump-json", "--no-warnings", url]
@@ -61,7 +75,18 @@ class AsyncYT(AsyncFFmpeg):
         return VideoInfo.from_dict(data)
 
     async def _search(self, query: str, max_results: int = 10) -> List[VideoInfo]:
-        """Search for videos"""
+        """
+        Search for videos by query.
+
+        :param query: Search query string.
+        :type query: str
+        :param max_results: Maximum number of results to return.
+        :type max_results: int
+        :return: List of VideoInfo objects.
+        :rtype: List[VideoInfo]
+        :raises YtdlpSearchError: If yt-dlp search fails.
+        """
+
         search_url = f"ytsearch{max_results}:{query}"
 
         cmd = [str(self.ytdlp_path), "--dump-json", "--no-warnings", search_url]
@@ -95,6 +120,16 @@ class AsyncYT(AsyncFFmpeg):
             ],
         ],
     ):
+        """
+        Parse and validate download configuration arguments.
+
+        :param args: Positional arguments (url, config, progress_callback, DownloadRequest).
+        :param kwargs: Keyword arguments (url, config, progress_callback, request).
+        :return: Tuple of (url, config, progress_callback)
+        :rtype: Tuple[str, Optional[DownloadConfig], Optional[Callable]]
+        :raises TypeError: If arguments are invalid.
+        """
+
         url: Optional[str] = None
         config: Optional[DownloadConfig] = None
         progress_callback: Optional[
@@ -154,23 +189,17 @@ class AsyncYT(AsyncFFmpeg):
 
     async def download(self, *args, **kwargs) -> str:
         """
-        Asynchronously downloads media from a given URL using yt-dlp, tracks progress, and processes the output file.
-        Args:
-            url (str) or request (DownloadRequest): The URL or request object for the download.
-            config (Optional[DownloadConfig]): Download configuration.
-            progress_callback (Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]): Progress callback.
-        Returns:
-            str: The path to the processed output file.
-        Raises:
-            DownloadAlreadyExistsError: If a download with the same ID is already in progress.
-            YtdlpDownloadError: If yt-dlp returns a non-zero exit code.
-            Exception: If the output file cannot be determined from yt-dlp output.
-            DownloadGotCanceledError: If the download is cancelled.
-            FileNotFoundError: If FFmpeg wasn't installed.
-        Side Effects:
-            - Creates the output directory if it does not exist.
-            - Tracks download progress and invokes the progress callback if provided.
-            - Cleans up the download process from the internal tracking dictionary.
+        Asynchronously download media from a given URL using yt-dlp, track progress, and process the output file.
+
+        :param args: url (str) or request (DownloadRequest)
+        :param kwargs: config (Optional[DownloadConfig]), progress_callback (Optional[Callable])
+        :return: Path to the processed output file.
+        :rtype: str
+        :raises DownloadAlreadyExistsError: If a download with the same ID is already in progress.
+        :raises YtdlpDownloadError: If yt-dlp returns a non-zero exit code.
+        :raises Exception: If the output file cannot be determined from yt-dlp output.
+        :raises DownloadGotCanceledError: If the download is cancelled.
+        :raises FileNotFoundError: If FFmpeg wasn't installed.
         """
 
         url, config, progress_callback = self._get_config(*args, **kwargs)
@@ -289,7 +318,14 @@ class AsyncYT(AsyncFFmpeg):
             self._downloads.pop(id, None)
 
     async def cancel(self, download_id: str):
-        """cancel the downloading with download_id"""
+        """
+        Cancel the downloading with download_id.
+
+        :param download_id: The ID of the download to cancel.
+        :type download_id: str
+        :raises DownloadNotFoundError: If the download ID is not found.
+        """
+
         process = self._downloads.pop(download_id, None)
         if not process:
             raise DownloadNotFoundError(download_id)
@@ -315,7 +351,15 @@ class AsyncYT(AsyncFFmpeg):
     ) -> DownloadResponse: ...
 
     async def download_with_response(self, *args, **kwargs) -> DownloadResponse:
-        """Download with API-friendly response format"""
+        """
+        Download with API-friendly response format.
+
+        :param args: url (str) or request (DownloadRequest)
+        :param kwargs: config (Optional[DownloadConfig]), progress_callback (Optional[Callable])
+        :return: DownloadResponse object with metadata and error info.
+        :rtype: DownloadResponse
+        """
+
         try:
             url, config, progress_callback = self._get_config(*args, **kwargs)
             config = config or DownloadConfig()
@@ -378,15 +422,16 @@ class AsyncYT(AsyncFFmpeg):
     ) -> SearchResponse:
         """
         Perform an asynchronous search operation.
-        Args:
-            query (Optional[str], optional): The search query string. Required if `request` is not provided.
-            max_results (Optional[int], optional): The maximum number of results to return. Defaults to 10 if not specified.
-            request (Optional["SearchRequest"], optional): An optional SearchRequest object containing search parameters.
-                If provided, `query` and `max_results` must not be specified.
-        Returns:
-            SearchResponse: An object containing the search results, success status, message, and error (if any).
-        Raises:
-            TypeError: If both `request` and either `query` or `max_results` are provided, or if neither `request` nor `query` is provided.
+
+        :param query: The search query string. Required if `request` is not provided.
+        :type query: Optional[str]
+        :param max_results: Maximum number of results to return. Defaults to 10.
+        :type max_results: Optional[int]
+        :param request: Optional SearchRequest object containing search parameters.
+        :type request: Optional[SearchRequest]
+        :return: SearchResponse object with results and status.
+        :rtype: SearchResponse
+        :raises TypeError: If both `request` and either `query` or `max_results` are provided, or if neither is provided.
         """
 
         if request is not None:
@@ -449,25 +494,25 @@ class AsyncYT(AsyncFFmpeg):
         request: Optional[PlaylistRequest] = None,
     ) -> PlaylistResponse:
         """
-        Asynchronously downloads videos from a YouTube playlist.
-        You can provide either a `request` object containing all parameters, or specify
-        `url`, `config`, and `max_videos` individually. If `request` is provided, you must
-        not provide `url`, `config`, or `max_videos`.
-        Args:
-            url (Optional[str]): The URL of the playlist to download. Required if `request` is not given.
-            config (Optional[DownloadConfig]): Download configuration options.
-            max_videos (Optional[int]): Maximum number of videos to download from the playlist. Defaults to 100.
-            progress_callback (Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]):
-                Optional callback to report download progress.
-            request (Optional[PlaylistRequest]): An object containing all playlist download parameters.
-        Returns:
-            PlaylistResponse: An object containing the result of the playlist download, including
-                success status, message, list of downloaded files, failed downloads, total videos,
-                and number of successful downloads.
-        Raises:
-            TypeError: If both `request` and any of `url`, `config`, or `max_videos` are provided,
-                or if neither `request` nor `url` is provided.
+        Asynchronously download videos from a YouTube playlist.
+
+        You can provide either a `request` object containing all parameters, or specify `url`, `config`, and `max_videos` individually. If `request` is provided, you must not provide `url`, `config`, or `max_videos`.
+
+        :param url: The URL of the playlist to download. Required if `request` is not given.
+        :type url: Optional[str]
+        :param config: Download configuration options.
+        :type config: Optional[DownloadConfig]
+        :param max_videos: Maximum number of videos to download from the playlist. Defaults to 100.
+        :type max_videos: Optional[int]
+        :param progress_callback: Optional callback to report download progress.
+        :type progress_callback: Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]
+        :param request: An object containing all playlist download parameters.
+        :type request: Optional[PlaylistRequest]
+        :return: PlaylistResponse object with download results.
+        :rtype: PlaylistResponse
+        :raises TypeError: If both `request` and any of `url`, `config`, or `max_videos` are provided, or if neither is provided.
         """
+
         if request is not None:
             if url is not None or config is not None or max_videos is not None:
                 raise TypeError(
@@ -535,15 +580,13 @@ class AsyncYT(AsyncFFmpeg):
 
     async def get_playlist_info(self, url: str) -> Dict[str, Any]:
         """
-        Asynchronously retrieves information about a YouTube playlist using yt-dlp.
-        Args:
-            url (str): The URL of the YouTube playlist.
-        Returns:
-            Dict[str, Any]: A dictionary containing:
-                - "entries": A list of video entries in the playlist, each as a dict.
-                - "title": The title of the playlist, or "Unknown Playlist"/"Empty Playlist" if not available.
-        Raises:
-            YtdlpPlaylistGetInfoError: If the yt-dlp process fails to retrieve playlist information.
+        Asynchronously retrieve information about a YouTube playlist using yt-dlp.
+
+        :param url: The URL of the YouTube playlist.
+        :type url: str
+        :return: Dictionary containing playlist entries and title.
+        :rtype: Dict[str, Any]
+        :raises YtdlpPlaylistGetInfoError: If the yt-dlp process fails to retrieve playlist information.
         """
 
         cmd = [
@@ -581,19 +624,23 @@ class AsyncYT(AsyncFFmpeg):
 
 
 class DeprecatedDownloader(AsyncYT):
+    """
+    .. deprecated::
+        Use :class:`AsyncYT` instead. This class will be removed in a future release.
+    """
 
-    @warnings.deprecated(
-        "`Downloader` is deprecated; use `AsyncYT` instead.",
-        category=DeprecationWarning,
-    )
-    def __init__(self, *args, **kwargs):
+    def __init__(self, bin_dir: Optional[str | Path] = None):
+        """
+        .. deprecated::
+            Use :class:`AsyncYT` instead. This class will be removed in a future release.
+        """
         warnings.warn(
             "Downloader is deprecated and will be removed in a future release. "
             "Please use AsyncYT instead.",
             DeprecationWarning,
             stacklevel=2,
         )
-        super().__init__(*args, **kwargs)
+        super().__init__(bin_dir)
 
 
 Downloader = DeprecatedDownloader

@@ -8,3 +8,4 @@ from .basemodels import *
 from .enums import *
 from .exceptions import *
 from .utils import *
+from binaries import AsyncFFmpeg

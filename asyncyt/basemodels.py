@@ -35,7 +35,30 @@ __all__ = [
 
 
 class VideoInfo(BaseModel):
-    """Video information extracted from URL"""
+    """
+    Video information extracted from URL.
+
+    :param url: Video URL.
+    :type url: str
+    :param title: Video title.
+    :type title: str
+    :param duration: Duration in seconds.
+    :type duration: float
+    :param uploader: Uploader name.
+    :type uploader: str
+    :param view_count: Number of views.
+    :type view_count: int
+    :param like_count: Number of likes.
+    :type like_count: Optional[int]
+    :param description: Video description.
+    :type description: str
+    :param thumbnail: Thumbnail URL.
+    :type thumbnail: str
+    :param upload_date: Upload date.
+    :type upload_date: str
+    :param formats: List of available formats.
+    :type formats: List[Dict[str, Any]]
+    """
 
     url: str
     title: str
@@ -56,6 +79,14 @@ class VideoInfo(BaseModel):
 
     @classmethod
     def from_dict(cls, data: dict) -> "VideoInfo":
+        """
+        Create a VideoInfo instance from a dictionary.
+
+        :param data: Dictionary with video info.
+        :type data: dict
+        :return: VideoInfo instance.
+        :rtype: VideoInfo
+        """
         return cls(
             url=data.get("webpage_url", ""),
             title=data.get("title", ""),
@@ -86,7 +117,18 @@ class VideoInfo(BaseModel):
 
 
 class InputFile(BaseModel):
-    """Single input file configuration"""
+    """
+    Single input file configuration.
+
+    :param path: Path to input file.
+    :type path: str
+    :param type: Type of input file.
+    :type type: InputType
+    :param options: Input-specific options.
+    :type options: List[str]
+    :param stream_index: Specific stream index to use.
+    :type stream_index: Optional[int]
+    """
 
     path: str = Field(description="Path to input file")
     type: InputType = Field(description="Type of input file")
@@ -105,7 +147,11 @@ class InputFile(BaseModel):
 
 
 class FFmpegConfig(BaseModel):
-    """Configuration for FFmpeg operations"""
+    """
+    Configuration for FFmpeg operations.
+
+    See attributes for all configuration options.
+    """
 
     ffmpeg_path: str = Field(default="ffmpeg", description="Path of FFmpeg")
     # Input/Output
@@ -238,14 +284,32 @@ class FFmpegConfig(BaseModel):
         options: Optional[List[str]] = None,
         stream_index: Optional[int] = None,
     ):
-        """Add an input file to the configuration"""
+        """
+        Add an input file to the configuration.
+
+        :param path: Path to input file.
+        :type path: str
+        :param input_type: Type of input file.
+        :type input_type: InputType
+        :param options: Input-specific options.
+        :type options: Optional[List[str]]
+        :param stream_index: Specific stream index to use.
+        :type stream_index: Optional[int]
+        """
         input_file = InputFile(
             path=path, type=input_type, options=options or [], stream_index=stream_index
         )
         self.inputs.append(input_file)
 
     def add_media_input(self, path: str, options: Optional[List[str]] = None):
-        """Convenience method to add Video/Audio input"""
+        """
+        Convenience method to add Video/Audio input.
+
+        :param path: Path to media file.
+        :type path: str
+        :param options: Input-specific options.
+        :type options: Optional[List[str]]
+        """
         ext = os.path.splitext(os.path.basename(path))[1][1:]
         if ext in [f.value for f in VideoFormat]:
             self.add_input(path, InputType.VIDEO, options)
@@ -258,18 +322,45 @@ class FFmpegConfig(BaseModel):
             self._original_audio_type = os.path.splitext(os.path.basename(path))[1][1:]
 
     def add_subtitle_input(self, path: str, options: Optional[List[str]] = None):
-        """Convenience method to add subtitle input"""
+        """
+        Convenience method to add subtitle input.
+
+        :param path: Path to subtitle file.
+        :type path: str
+        :param options: Input-specific options.
+        :type options: Optional[List[str]]
+        """
         self.add_input(path, InputType.SUBTITLE, options)
 
     def add_thumbnail_input(self, path: str, options: Optional[List[str]] = None):
-        """Convenience method to add thumbnail input"""
+        """
+        Convenience method to add thumbnail input.
+
+        :param path: Path to thumbnail file.
+        :type path: str
+        :param options: Input-specific options.
+        :type options: Optional[List[str]]
+        """
         self.add_input(path, InputType.THUMBNAIL, options)
 
     def index_thumbnail_input(self, index: int):
+        """
+        Set the thumbnail stream index.
+
+        :param index: Stream index for thumbnail.
+        :type index: int
+        """
         self._thumbnail_indexed = index
 
     @property
     def is_empty(self):
+        """
+        Check if the config is empty (no video/audio settings).
+
+        :return: True if empty, False otherwise.
+        :rtype: bool
+        :raises InvalidFFmpegConfigError: If neither video_format nor audio_codec is set.
+        """
         if not self.video_format and not self.audio_codec:
             raise InvalidFFmpegConfigError(
                 "At least one of video_format or audio_codec must be set."
@@ -304,7 +395,12 @@ class FFmpegConfig(BaseModel):
         )
 
     def build_command(self) -> List[str]:
-        """Build the FFmpeg command based on configuration with dynamic format/codec handling"""
+        """
+        Build the FFmpeg command based on configuration with dynamic format/codec handling.
+
+        :return: List of FFmpeg command arguments.
+        :rtype: List[str]
+        """
         cmd = [self.ffmpeg_path]
 
         # Add global options
@@ -477,7 +573,13 @@ class FFmpegConfig(BaseModel):
         return cmd
 
     def build_two_pass_commands(self) -> tuple[List[str], List[str]]:
-        """Build two separate commands for two-pass encoding"""
+        """
+        Build two separate commands for two-pass encoding.
+
+        :return: Tuple of (first_pass_command, second_pass_command).
+        :rtype: tuple[List[str], List[str]]
+        :raises ValueError: If two-pass encoding is not enabled.
+        """
         if not self.two_pass:
             raise ValueError("Two-pass encoding not enabled")
 
@@ -505,7 +607,12 @@ class FFmpegConfig(BaseModel):
         return first_pass, second_pass
 
     def get_command_string(self) -> str:
-        """Get the command as a formatted string"""
+        """
+        Get the command as a formatted string.
+
+        :return: FFmpeg command as a string.
+        :rtype: str
+        """
         cmd = self.build_command()
         # Escape arguments with spaces
         escaped_cmd = []
@@ -517,6 +624,14 @@ class FFmpegConfig(BaseModel):
         return " ".join(escaped_cmd)
 
     def get_audio_format(self, original_ext: Optional[str] = None):
+        """
+        Get the audio format extension for the current codec.
+
+        :param original_ext: Original file extension.
+        :type original_ext: Optional[str]
+        :return: Audio format extension.
+        :rtype: str
+        """
         original_ext = original_ext or self._original_audio_type or "audio"
         audio_extensions = {
             AudioCodec.MP3: "mp3",
@@ -538,6 +653,14 @@ class FFmpegConfig(BaseModel):
         return audio_extensions.get(self.audio_codec, original_ext)
 
     def get_audio_codec(self, format: Optional[AudioFormat] = None) -> AudioCodec:
+        """
+        Get the audio codec for a given format.
+
+        :param format: Audio format.
+        :type format: Optional[AudioFormat]
+        :return: AudioCodec enum value.
+        :rtype: AudioCodec
+        """
         ext = format or AudioFormat.COPY
 
         audio_extensions = {
@@ -559,7 +682,15 @@ class FFmpegConfig(BaseModel):
         return audio_extensions.get(ext.value, AudioCodec.COPY)
 
     def get_output_filename(self, original_ext: Optional[str] = None) -> str:
-        """Generate output filename with proper extension"""
+        """
+        Generate output filename with proper extension.
+
+        :param original_ext: Original file extension.
+        :type original_ext: Optional[str]
+        :return: Output filename.
+        :rtype: str
+        :raises InvalidFFmpegConfigError: If neither video_format nor audio_codec is set.
+        """
         base_name = self.output_filename or "output"
         is_audio_mode = (self.extract_audio and not self.remove_video) or (
             self.audio_codec and not self.video_format
@@ -650,6 +781,25 @@ class FFmpegConfig(BaseModel):
 
 
 class FFmpegProgress(BaseModel):
+    """
+    FFmpeg progress information.
+
+    :param frame: Current frame.
+    :type frame: int
+    :param fps: Frames per second.
+    :type fps: float
+    :param bitrate: Bitrate string.
+    :type bitrate: str
+    :param total_size: Total size in bytes.
+    :type total_size: int
+    :param out_time_us: Output time in microseconds.
+    :type out_time_us: int
+    :param speed: Processing speed.
+    :type speed: str
+    :param progress: Progress status.
+    :type progress: str
+    """
+
     frame: int = 0
     fps: float = 0.0
     bitrate: str = "0kbits/s"
@@ -677,7 +827,11 @@ class FFmpegProgress(BaseModel):
 
 
 class DownloadConfig(BaseModel):
-    """Configuration for downloads"""
+    """
+    Configuration for downloads.
+
+    See attributes for all configuration options.
+    """
 
     output_path: str = Field(default="./downloads", description="Output directory path")
     quality: Quality = Field(default=Quality.BEST, description="Video quality setting")
@@ -753,7 +907,30 @@ class DownloadConfig(BaseModel):
 
 
 class DownloadProgress(BaseModel):
-    """Progress information for downloads"""
+    """
+    Progress information for downloads.
+
+    :param id: Download ID.
+    :type id: str
+    :param url: Download URL.
+    :type url: str
+    :param title: Download title.
+    :type title: str
+    :param status: Progress status.
+    :type status: ProgressStatus
+    :param downloaded_bytes: Bytes downloaded.
+    :type downloaded_bytes: int
+    :param total_bytes: Total bytes to download.
+    :type total_bytes: int
+    :param speed: Download speed.
+    :type speed: str
+    :param eta: Estimated time remaining.
+    :type eta: int
+    :param percentage: Download percentage.
+    :type percentage: float
+    :param ffmpeg_progress: FFmpeg progress info.
+    :type ffmpeg_progress: FFmpegProgress
+    """
 
     id: str
     url: str
@@ -775,7 +952,18 @@ class DownloadProgress(BaseModel):
 
 
 class DownloadFileProgress(BaseModel):
-    """Progress information for File downloads"""
+    """
+    Progress information for file downloads.
+
+    :param status: Progress status.
+    :type status: ProgressStatus
+    :param downloaded_bytes: Bytes downloaded.
+    :type downloaded_bytes: int
+    :param total_bytes: Total bytes to download.
+    :type total_bytes: int
+    :param percentage: Download percentage.
+    :type percentage: float
+    """
 
     status: ProgressStatus = ProgressStatus.DOWNLOADING
     downloaded_bytes: int = 0
@@ -791,7 +979,14 @@ class DownloadFileProgress(BaseModel):
 
 
 class SetupProgress(BaseModel):
-    """Progress information for File downloads"""
+    """
+    Progress information for file downloads.
+
+    :param file: File being downloaded.
+    :type file: str
+    :param download_file_progress: Progress of the file being downloaded.
+    :type download_file_progress: DownloadFileProgress
+    """
 
     file: str = "yt-dlp"
     download_file_progress: DownloadFileProgress = Field(
@@ -804,7 +999,14 @@ class SetupProgress(BaseModel):
 
 # API Response Models
 class DownloadRequest(BaseModel):
-    """Request model for download endpoints"""
+    """
+    Request model for download endpoints.
+
+    :param url: Video URL to download.
+    :type url: str
+    :param config: Download configuration.
+    :type config: Optional[DownloadConfig]
+    """
 
     url: str = Field(..., description="Video URL to download")
     config: Optional[DownloadConfig] = Field(None, description="Download configuration")
@@ -830,7 +1032,14 @@ class DownloadRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """Request model for search endpoints"""
+    """
+    Request model for search endpoints.
+
+    :param query: Search query string.
+    :type query: str
+    :param max_results: Maximum number of results.
+    :type max_results: int
+    """
 
     query: str = Field(..., min_length=1, max_length=200, description="Search query")
     max_results: int = Field(10, ge=1, le=50, description="Maximum number of results")
@@ -840,7 +1049,16 @@ class SearchRequest(BaseModel):
 
 
 class PlaylistRequest(BaseModel):
-    """Request model for playlist downloads"""
+    """
+    Request model for playlist downloads.
+
+    :param url: Playlist URL.
+    :type url: str
+    :param config: Download configuration.
+    :type config: Optional[DownloadConfig]
+    :param max_videos: Maximum videos to download.
+    :type max_videos: int
+    """
 
     url: str = Field(..., description="Playlist URL")
     config: Optional[DownloadConfig] = Field(None, description="Download configuration")
@@ -858,7 +1076,22 @@ class PlaylistRequest(BaseModel):
 
 
 class DownloadResponse(BaseModel):
-    """Response model for download operations"""
+    """
+    Response model for download operations.
+
+    :param success: Whether the download was successful.
+    :type success: bool
+    :param message: Status message.
+    :type message: str
+    :param id: Download ID.
+    :type id: str
+    :param filename: Downloaded filename.
+    :type filename: Optional[str]
+    :param video_info: Video information.
+    :type video_info: Optional[VideoInfo]
+    :param error: Error message if any.
+    :type error: Optional[str]
+    """
 
     success: bool
     message: str
@@ -883,7 +1116,20 @@ class DownloadResponse(BaseModel):
 
 
 class SearchResponse(BaseModel):
-    """Response model for search operations"""
+    """
+    Response model for search operations.
+
+    :param success: Whether the search was successful.
+    :type success: bool
+    :param message: Status message.
+    :type message: str
+    :param results: List of search results.
+    :type results: List[VideoInfo]
+    :param total_results: Total number of results.
+    :type total_results: int
+    :param error: Error message if any.
+    :type error: Optional[str]
+    """
 
     success: bool
     message: str
@@ -919,7 +1165,24 @@ class SearchResponse(BaseModel):
 
 
 class PlaylistResponse(BaseModel):
-    """Response model for playlist operations"""
+    """
+    Response model for playlist operations.
+
+    :param success: Whether the playlist download was successful.
+    :type success: bool
+    :param message: Status message.
+    :type message: str
+    :param downloaded_files: List of downloaded files.
+    :type downloaded_files: List[str]
+    :param failed_downloads: List of failed downloads.
+    :type failed_downloads: List[str]
+    :param total_videos: Total number of videos in playlist.
+    :type total_videos: int
+    :param successful_downloads: Number of successful downloads.
+    :type successful_downloads: int
+    :param error: Error message if any.
+    :type error: Optional[str]
+    """
 
     success: bool
     message: str
@@ -940,7 +1203,22 @@ class PlaylistResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Health check response"""
+    """
+    Health check response.
+
+    :param status: Health status.
+    :type status: str
+    :param yt_dlp_available: Is yt-dlp available.
+    :type yt_dlp_available: bool
+    :param ffmpeg_available: Is ffmpeg available.
+    :type ffmpeg_available: bool
+    :param version: Version string.
+    :type version: str
+    :param binaries_path: Path to binaries.
+    :type binaries_path: Optional[str]
+    :param error: Error message if any.
+    :type error: Optional[str]
+    """
 
     status: str = "healthy"
     yt_dlp_available: bool = False
@@ -951,6 +1229,29 @@ class HealthResponse(BaseModel):
 
 
 class StreamInfo(BaseModel):
+    """
+    Stream information for media files.
+
+    :param index: Stream index.
+    :type index: int
+    :param codec_type: Codec type (audio, video, etc).
+    :type codec_type: str
+    :param codec_name: Codec name.
+    :type codec_name: Optional[str]
+    :param width: Video width.
+    :type width: Optional[int]
+    :param height: Video height.
+    :type height: Optional[int]
+    :param bit_rate: Bitrate.
+    :type bit_rate: Optional[int]
+    :param sample_rate: Sample rate.
+    :type sample_rate: Optional[int]
+    :param channels: Number of channels.
+    :type channels: Optional[int]
+    :param language: Language tag.
+    :type language: Optional[str]
+    """
+
     index: int
     codec_type: str
     codec_name: Optional[str] = None
@@ -963,6 +1264,25 @@ class StreamInfo(BaseModel):
 
 
 class MediaInfo(BaseModel):
+    """
+    Media file information.
+
+    :param filename: Filename.
+    :type filename: str
+    :param format_name: Format name.
+    :type format_name: str
+    :param format_long_name: Long format name.
+    :type format_long_name: str
+    :param duration: Duration in seconds.
+    :type duration: float
+    :param size: File size in bytes.
+    :type size: int
+    :param bit_rate: Bitrate.
+    :type bit_rate: int
+    :param streams: List of stream info.
+    :type streams: List[StreamInfo]
+    """
+
     filename: str
     format_name: str
     format_long_name: str

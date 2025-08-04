@@ -48,10 +48,20 @@ __all__ = ["BinaryManager", "AsyncFFmpeg"]
 
 
 class BinaryManager:
-    """Main Manager For managing binaries"""
+    """
+    Main Manager for managing binaries.
 
-    def __init__(self):
-        self.bin_dir = Path.cwd() / "bin"
+    :param bin_dir: Directory for binary files (yt-dlp, ffmpeg).
+    :type bin_dir: Optional[str | Path]
+    """
+
+    def __init__(self, bin_dir: Optional[str | Path] = None):
+        if isinstance(bin_dir, str):
+            bin_dir = Path(bin_dir)
+
+        if bin_dir and bin_dir.exists() and not bin_dir.is_dir():
+            raise ValueError(f"Path {bin_dir} not dir!")
+        self.bin_dir = bin_dir or Path.cwd() / "bin"
         system = platform.system().lower()
 
         self.ytdlp_path = (
@@ -69,7 +79,12 @@ class BinaryManager:
         self._setup_only_ffmpeg: bool = False
 
     async def setup_binaries_generator(self) -> AsyncGenerator[SetupProgress, Any]:
-        """Download and setup yt-dlp and ffmpeg binaries with yield SetupProgress"""
+        """
+        Download and setup yt-dlp and ffmpeg binaries, yielding SetupProgress.
+
+        :return: Async generator yielding SetupProgress objects.
+        :rtype: AsyncGenerator[SetupProgress, Any]
+        """
         self.bin_dir.mkdir(exist_ok=True)
 
         # Setup yt-dlp
@@ -84,7 +99,11 @@ class BinaryManager:
         logger.info("All binaries are ready!")
 
     async def setup_binaries(self) -> None:
-        """Download and setup yt-dlp and ffmpeg binaries"""
+        """
+        Download and setup yt-dlp and ffmpeg binaries.
+
+        :return: None
+        """
         self.bin_dir.mkdir(exist_ok=True)
 
         # Setup yt-dlp
@@ -99,7 +118,12 @@ class BinaryManager:
         logger.info("All binaries are ready!")
 
     async def _setup_ytdlp(self) -> AsyncGenerator[SetupProgress, Any]:
-        """Download yt-dlp binary"""
+        """
+        Download yt-dlp binary.
+
+        :return: Async generator yielding SetupProgress objects.
+        :rtype: AsyncGenerator[SetupProgress, Any]
+        """
         system = platform.system().lower()
 
         if system == "windows":
@@ -116,7 +140,12 @@ class BinaryManager:
                 os.chmod(self.ytdlp_path, 0o755)
 
     async def _setup_ffmpeg(self) -> AsyncGenerator[SetupProgress, Any]:
-        """Download ffmpeg binary"""
+        """
+        Download ffmpeg binary.
+
+        :return: Async generator yielding SetupProgress objects.
+        :rtype: AsyncGenerator[SetupProgress, Any]
+        """
         system = platform.system().lower()
         ffmpeg = shutil.which("ffmpeg")
         ffprobe = shutil.which("ffprobe")
@@ -166,7 +195,13 @@ class BinaryManager:
             logger.warning("ffmpeg not found. Please install via your package manager")
 
     async def _extract_ffmpeg_windows(self, zip_path: Path) -> None:
-        """Extract only missing ffmpeg-related binaries from the Windows zip file."""
+        """
+        Extract only missing ffmpeg-related binaries from the Windows zip file.
+
+        :param zip_path: Path to the ffmpeg zip file.
+        :type zip_path: Path
+        :return: None
+        """
         ffmpeg_exists = shutil.which("ffmpeg") is not None
         ffprobe_exists = shutil.which("ffprobe") is not None
 
@@ -187,7 +222,19 @@ class BinaryManager:
     async def _download_file(
         self, url: str, filepath: Path, max_retries: int = 5
     ) -> AsyncGenerator[DownloadFileProgress, Any]:
-        """Download a file asynchronously with retries, timeout, resume support, and file size verification"""
+        """
+        Download a file asynchronously with retries, timeout, resume support, and file size verification.
+
+        :param url: URL to download from.
+        :type url: str
+        :param filepath: Path to save the file.
+        :type filepath: Path
+        :param max_retries: Maximum number of retries.
+        :type max_retries: int
+        :return: Async generator yielding DownloadFileProgress objects.
+        :rtype: AsyncGenerator[DownloadFileProgress, Any]
+        :raises AsyncYTBase: If download fails after max_retries.
+        """
         temp_filepath = filepath.with_suffix(filepath.suffix + ".part")
         attempt = 0
         backoff = 2
@@ -271,14 +318,11 @@ class BinaryManager:
 
     async def health_check(self) -> HealthResponse:
         """
-        Performs a health check on the required binaries (yt-dlp and ffmpeg).
-        Asynchronously verifies the availability of yt-dlp and ffmpeg by attempting to execute them
-        with their respective version commands. Determines the health status based on the results.
-        Returns:
-            HealthResponse: An object containing the health status ("healthy", "degraded", or "unhealthy"),
-            the availability of yt-dlp and ffmpeg, the binaries path, and any error encountered.
-        Raises:
-            Exception: If an unexpected error occurs during the health check process.
+        Perform a health check on the required binaries (yt-dlp and ffmpeg).
+
+        :return: HealthResponse object with health status and binary availability.
+        :rtype: HealthResponse
+        :raises Exception: If an unexpected error occurs during the health check process.
         """
 
         try:
@@ -337,7 +381,17 @@ class BinaryManager:
     async def _build_download_command(
         self, url: str, config: DownloadConfig
     ) -> List[str]:
-        """Build the yt-dlp command based on configuration"""
+        """
+        Build the yt-dlp command based on configuration.
+
+        :param url: URL to download.
+        :type url: str
+        :param config: Download configuration.
+        :type config: DownloadConfig
+        :return: List of command arguments for yt-dlp.
+        :rtype: List[str]
+        """
+
         cmd = [str(self.ytdlp_path)]
 
         # Basic options
@@ -431,7 +485,13 @@ class BinaryManager:
         return cmd
 
     async def _read_process_output(self, process):
-        """Read process output line by line as UTF-8 (with replacement for bad chars)"""
+        """
+        Read process output line by line as UTF-8 (with replacement for bad chars).
+
+        :param process: The process to read output from.
+        :type process: asyncio.subprocess.Process
+        :return: Async generator yielding lines of output.
+        """
         assert process.stdout is not None, "Process must have stdout=PIPE"
 
         while True:
@@ -441,7 +501,15 @@ class BinaryManager:
             yield line.decode("utf-8", errors="replace").rstrip()
 
     def _parse_progress(self, line: str, progress: DownloadProgress) -> None:
-        """Parse progress information from yt-dlp output"""
+        """
+        Parse progress information from yt-dlp output.
+
+        :param line: Output line from yt-dlp.
+        :type line: str
+        :param progress: DownloadProgress object to update.
+        :type progress: DownloadProgress
+        :return: None
+        """
         line = line.strip()
         if "Destination:" in line:
             # Extract title
@@ -486,7 +554,18 @@ class BinaryManager:
     async def _parse_ffmpeg_progress(
         self, line: str, progress: DownloadProgress, callback, media_info: MediaInfo
     ) -> None:
-        """Parse progress information from ffmpeg output"""
+        """
+        Parse progress information from ffmpeg output.
+
+        :param line: Output line from ffmpeg.
+        :type line: str
+        :param progress: DownloadProgress object to update.
+        :type progress: DownloadProgress
+        :param callback: Progress callback function.
+        :param media_info: MediaInfo object for duration reference.
+        :type media_info: MediaInfo
+        :return: None
+        """
         line = line.strip()
         if "progress=" in line:
             await call_callback(callback, progress)
@@ -522,7 +601,14 @@ class BinaryManager:
             pass
 
     def _parse_size(self, size_str: str) -> int:
-        """Parse size string (e.g., '10.5MiB', '1.2GB') to bytes"""
+        """
+        Parse size string (e.g., '10.5MiB', '1.2GB') to bytes.
+
+        :param size_str: Size string to parse.
+        :type size_str: str
+        :return: Size in bytes.
+        :rtype: int
+        """
         if not size_str:
             return 0
 
@@ -556,7 +642,14 @@ class BinaryManager:
             return 0
 
     def _parse_time(self, time_str: str) -> int:
-        """Parse time string to seconds"""
+        """
+        Parse time string to seconds.
+
+        :param time_str: Time string to parse.
+        :type time_str: str
+        :return: Time in seconds.
+        :rtype: int
+        """
         try:
             parts = time_str.split(":")
             if len(parts) == 2:
@@ -570,22 +663,35 @@ class BinaryManager:
 
 
 class AsyncFFmpeg(BinaryManager):
-    def __init__(self, setup_only_ffmpeg: bool = True):
-        super().__init__()
+    """
+    AsyncFFmpeg: binary manager for media processing tasks.
+
+    This class provides asynchronous methods to interact with FFmpeg and ffprobe binaries,
+    enabling media file analysis, format conversion, codec compatibility checks, and progress reporting.
+    It is designed to facilitate efficient and robust media processing workflows, including support for
+    thumbnail embedding, output file management, and error handling.
+
+    :param setup_only_ffmpeg: If True, only sets up FFmpeg binary. Defaults to True.
+    :type setup_only_ffmpeg: bool
+    :param bin_dir: Directory containing FFmpeg binaries. Defaults to None.
+    :type bin_dir: Optional[str | Path]
+    """
+
+    def __init__(
+        self, setup_only_ffmpeg: bool = True, bin_dir: Optional[str | Path] = None
+    ):
+        super().__init__(bin_dir)
         self._setup_only_ffmpeg = setup_only_ffmpeg
 
     async def get_file_info(self, file_path: str) -> MediaInfo:
         """
-        Asynchronously retrieves media file information using ffprobe.
-        Args:
-            file_path (str): Path to the media file to be analyzed.
-        Returns:
-            MediaInfo: An object containing metadata about the media file, including format details and stream information.
-        Raises:
-            FFmpegProcessingError: If ffprobe fails to process the file or returns a non-zero exit code.
-        Notes:
-            - Requires ffprobe to be available at self.ffprobe_path.
-            - Parses output as JSON and extracts format and stream metadata.
+        Asynchronously retrieve media file information using ffprobe.
+
+        :param file_path: Path to the media file to be analyzed.
+        :type file_path: str
+        :return: MediaInfo object containing metadata about the media file.
+        :rtype: MediaInfo
+        :raises FFmpegProcessingError: If ffprobe fails to process the file or returns a non-zero exit code.
         """
 
         cmd = [
@@ -654,20 +760,25 @@ class AsyncFFmpeg(BinaryManager):
         url: Optional[str] = None,
     ):
         """
-        Asynchronously processes a media file using FFmpeg, handling format conversion, codec compatibility, and progress reporting.
-        Args:
-            file (str): Path to the input media file.
-            ffmpeg_config (FFmpegConfig): Configuration object for FFmpeg processing.
-            config (Optional[DownloadConfig]): Download configuration, including output path and format settings.
-            progress_callback (Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]): Callback function to report progress updates.
-            original_progress (Optional[DownloadProgress]): Initial progress state, if available.
-            url (Optional[str]): Source URL of the media file.
-        Returns:
-            str: Filename of the processed output file.
-        Raises:
-            CodecCompatibilityError: If the desired codec and format are incompatible and error raising is enabled.
-            FFmpegOutputExistsError: If the output file already exists and overwriting is disabled.
-            FFmpegProcessingError: If FFmpeg returns a non-zero exit code during processing.
+        Asynchronously process a media file using FFmpeg, handling format conversion, codec compatibility, and progress reporting.
+
+        :param file: Path to the input media file.
+        :type file: str
+        :param ffmpeg_config: Configuration object for FFmpeg processing.
+        :type ffmpeg_config: FFmpegConfig
+        :param config: Download configuration, including output path and format settings.
+        :type config: Optional[DownloadConfig]
+        :param progress_callback: Callback function to report progress updates.
+        :type progress_callback: Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]
+        :param progress: Initial progress state, if available.
+        :type progress: Optional[DownloadProgress]
+        :param url: Source URL of the media file.
+        :type url: Optional[str]
+        :return: Filename of the processed output file.
+        :rtype: str
+        :raises CodecCompatibilityError: If the desired codec and format are incompatible and error raising is enabled.
+        :raises FFmpegOutputExistsError: If the output file already exists and overwriting is disabled.
+        :raises FFmpegProcessingError: If FFmpeg returns a non-zero exit code during processing.
         """
 
         if not progress:

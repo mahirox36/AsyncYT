@@ -25,6 +25,13 @@ __all__ = [
 
 
 async def call_callback(callback, *args, **kwargs):
+    """
+    Call a callback, supporting both coroutine and regular functions.
+
+    :param callback: The callback function to call.
+    :param args: Positional arguments for the callback.
+    :param kwargs: Keyword arguments for the callback.
+    """
     if inspect.iscoroutinefunction(callback):
         await callback(*args, **kwargs)
     else:
@@ -32,6 +39,16 @@ async def call_callback(callback, *args, **kwargs):
 
 
 def get_unique_filename(file: Path, title: str) -> Path:
+    """
+    Generate a unique filename in the same directory, avoiding overwrites.
+
+    :param file: Original file path.
+    :type file: Path
+    :param title: Desired title for the file.
+    :type title: str
+    :return: Unique file path.
+    :rtype: Path
+    """
     base = file.with_name(title).with_suffix(file.suffix)
     new_file = base
     counter = 1
@@ -44,6 +61,16 @@ def get_unique_filename(file: Path, title: str) -> Path:
 
 
 def get_id(url: str, config: "DownloadConfig"):
+    """
+    Generate a unique ID for a download based on URL and config.
+
+    :param url: Download URL.
+    :type url: str
+    :param config: Download configuration.
+    :type config: DownloadConfig
+    :return: SHA256 hash string.
+    :rtype: str
+    """
     combined = url + config.model_dump_json()
     return hashlib.sha256(combined.encode()).hexdigest()
 
@@ -148,18 +175,54 @@ audio_codec_compatibility: Dict[VideoFormat, List[AudioCodec]] = {
 
 
 def is_compatible(format: VideoFormat, codec: VideoCodec) -> bool:
+    """
+    Check if a video codec is compatible with a container format.
+
+    :param format: Video container format.
+    :type format: VideoFormat
+    :param codec: Video codec.
+    :type codec: VideoCodec
+    :return: True if compatible, False otherwise.
+    :rtype: bool
+    """
     return codec in codec_compatibility.get(format, [])
 
 
 def suggest_compatible_formats(video_codec: VideoCodec) -> List[VideoFormat]:
+    """
+    Suggest compatible container formats for a given video codec.
+
+    :param video_codec: Video codec.
+    :type video_codec: VideoCodec
+    :return: List of compatible formats.
+    :rtype: List[VideoFormat]
+    """
     return [fmt for fmt, codecs in codec_compatibility.items() if video_codec in codecs]
 
 
 def is_audio_compatible(format: VideoFormat, codec: AudioCodec) -> bool:
+    """
+    Check if an audio codec is compatible with a container format.
+
+    :param format: Video container format.
+    :type format: VideoFormat
+    :param codec: Audio codec.
+    :type codec: AudioCodec
+    :return: True if compatible, False otherwise.
+    :rtype: bool
+    """
     return codec in audio_codec_compatibility.get(format, [])
 
 
 def suggest_audio_compatible_formats(audio_codec: AudioCodec) -> List[VideoFormat]:
+    """
+    Suggest compatible container formats for a given audio codec.
+
+    :param audio_codec: Audio codec.
+    :type audio_codec: AudioCodec
+    :return: List of compatible formats.
+    :rtype: List[VideoFormat]
+    """
     return [
         fmt
         for fmt, codecs in audio_codec_compatibility.items()
@@ -168,4 +231,10 @@ def suggest_audio_compatible_formats(audio_codec: AudioCodec) -> List[VideoForma
 
 
 async def delete_file(path: str):
+    """
+    Asynchronously delete a file.
+
+    :param path: Path to the file to delete.
+    :type path: str
+    """
     await asyncio.to_thread(os.remove, path)
