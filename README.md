@@ -70,7 +70,7 @@ AsyncYT supports **1000+ websites** through yt-dlp, including:
 
 ## 📖 Documentation
 
-👉 [Read the Docs](https://github.com/mahirox36/AsyncYT/wiki)
+👉 [Read the Docs](https://asyncyt.mahirou.online/)
 
 ## 🤝 Contributing
 
