@@ -217,7 +217,7 @@ class AsyncYT(AsyncFFmpeg):
         output_dir.mkdir(parents=True, exist_ok=True)
         temp_dir = tempfile.TemporaryDirectory()
         temp_path = Path(temp_dir.name)
-        print(temp_path)
+        logger.debug(temp_path)
         config.output_path = str(temp_path.absolute())
 
         if not self.ffmpeg_path:
@@ -329,7 +329,7 @@ class AsyncYT(AsyncFFmpeg):
                 try:
                     shutil.move(str(item), str(destination))
                 except Exception as e:
-                    print(f"Failed to move {item} to {destination}: {e}")
+                    logger.error(f"Failed to move {item} to {destination}: {e}")
 
             temp_dir.cleanup()
 
