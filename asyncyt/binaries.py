@@ -791,7 +791,8 @@ class AsyncFFmpeg(BinaryManager):
         if config and url:
             output_dir = Path(config.output_path)
             output_dir.mkdir(parents=True, exist_ok=True)
-
+            overwrite = ffmpeg_config.overwrite
+            ffmpeg_config.overwrite = True
             embed_thumbnail = False
             write_thumbnail = False
             if config.embed_thumbnail:
@@ -931,5 +932,7 @@ class AsyncFFmpeg(BinaryManager):
             await delete_file(file)
         if config and not write_thumbnail and embed_thumbnail:
             await delete_file(thumbnail_path)
+            
+        ffmpeg_config.overwrite = overwrite
 
         return ffmpeg_config.get_output_filename()
