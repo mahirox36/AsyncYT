@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import hashlib
 from typing import Dict, List, TYPE_CHECKING
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from .enums import AudioCodec, VideoCodec, VideoFormat
 
@@ -22,6 +23,7 @@ __all__ = [
     "suggest_audio_compatible_formats",
     "delete_file",
     "get_unique_path",
+    "clean_youtube_url",
 ]
 
 
@@ -264,3 +266,46 @@ def get_unique_path(dir: Path, name: str) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
+
+
+def clean_youtube_url(url: str) -> str:
+    """
+    Clean any YouTube URL (watch, youtu.be, shorts, embed) into its core form.
+
+    :param url: The youtube URL
+    :type url: str
+    :return: Cleaned YouTube URL.
+    """
+    parsed = urlparse(url)
+
+    # short link URL
+    if parsed.netloc in ["youtu.be"]:
+        video_id = parsed.path.lstrip("/")
+        qs = parse_qs(parsed.query)
+        params = {"v": video_id}
+        return f"https://www.youtube.com/watch?{urlencode(params)}"
+
+    # shorts URL
+    if "youtube.com" in parsed.netloc and parsed.path.startswith("/shorts/"):
+        video_id = parsed.path.split("/")[2]
+        qs = parse_qs(parsed.query)
+        params = {"v": video_id}
+        return f"https://www.youtube.com/watch?{urlencode(params)}"
+
+    # embed URL
+    if "youtube.com" in parsed.netloc and parsed.path.startswith("/embed/"):
+        video_id = parsed.path.split("/")[2]
+        qs = parse_qs(parsed.query)
+        params = {"v": video_id}
+        return f"https://www.youtube.com/watch?{urlencode(params)}"
+
+    # Standard URL
+    if parsed.netloc in ["www.youtube.com", "youtube.com"] and parsed.path == "/watch":
+        qs = parse_qs(parsed.query)
+        params = {}
+        if "v" in qs:
+            params["v"] = qs["v"][0]
+        parsed = parsed._replace(query=urlencode(params, doseq=True))
+        return urlunparse(parsed)
+
+    return url

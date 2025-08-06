@@ -20,6 +20,7 @@ from .exceptions import *
 from .basemodels import *
 from .utils import (
     call_callback,
+    clean_youtube_url,
     get_id,
     get_unique_filename,
     get_unique_path,
@@ -61,7 +62,7 @@ class AsyncYT(AsyncFFmpeg):
         :rtype: VideoInfo
         :raises YtdlpGetInfoError: If yt-dlp fails to retrieve video information.
         """
-
+        url = clean_youtube_url(url)
         cmd = [str(self.ytdlp_path), "--dump-json", "--no-warnings", url]
 
         process = await asyncio.create_subprocess_exec(
@@ -207,6 +208,8 @@ class AsyncYT(AsyncFFmpeg):
         url, config, progress_callback = self._get_config(*args, **kwargs)
         if not config:
             config = DownloadConfig()
+
+        url = clean_youtube_url(url)
 
         id = get_id(url, config)
         if id in self._downloads:

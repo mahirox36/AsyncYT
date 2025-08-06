@@ -32,6 +32,7 @@ from .utils import (
     call_callback,
     delete_file,
     get_id,
+    get_unique_path,
     is_compatible,
     suggest_compatible_formats,
 )
@@ -413,7 +414,12 @@ class BinaryManager:
             quality = Quality(config.quality)
 
             if quality == Quality.BEST:
-                format_selector = "bestvideo[codec=h264]+bestaudio/bestvideo+bestaudio"
+                format_selector = (
+                    "bestvideo[vcodec=vp9]+bestaudio[acodec=opus]/"
+                    "bestvideo[vcodec=h264]+bestaudio[acodec=aac]/"
+                    "bestvideo+bestaudio/"
+                    "best"
+                )
             elif quality == Quality.WORST:
                 format_selector = "worst"
             elif quality == Quality.AUDIO_ONLY:
@@ -423,8 +429,8 @@ class BinaryManager:
             else:
                 height = quality.value.replace("p", "")
                 format_selector = (
-                    f"bestvideo[height<={height}][ext=mp4]+"
-                    f"bestaudio[ext=m4a]/best[height<={height}][ext=mp4]"
+                    f"bestvideo[height<={height}][vcodec=h264]+bestaudio[acodec=aac]/"
+                    f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
                 )
 
             cmd.extend(["-f", format_selector])
@@ -884,10 +890,25 @@ class AsyncFFmpeg(BinaryManager):
                 progress.percentage = 0
 
             ffmpeg_config.output_path = str(output_dir.absolute())
-        ffmpeg_cmd = ffmpeg_config.build_command()
         output_file_path = (
             Path(ffmpeg_config.output_path) / ffmpeg_config.get_output_filename()
         )
+
+        for input_file in ffmpeg_config.inputs:
+            input_path = Path(input_file.path)
+            logger.debug(f"Checking renaming for {input_path}")
+            try:
+                if input_path.samefile(output_file_path):
+                    logger.debug(f"Renaming Triggered")
+                    new_path = get_unique_path(input_path.parent, input_path.name)
+                    logger.debug(f"New name: {new_path}")
+                    input_path.rename(new_path)
+
+                    input_file.path = str(new_path.resolve())
+            except FileNotFoundError as e:
+                logger.warning(e)
+
+        ffmpeg_cmd = ffmpeg_config.build_command()
         if not ffmpeg_config.overwrite and output_file_path.exists():
             raise FFmpegOutputExistsError(str(output_file_path.absolute()))
 
@@ -928,11 +949,16 @@ class AsyncFFmpeg(BinaryManager):
             progress.percentage = 100.0
             await call_callback(progress_callback, progress)
 
-        if ffmpeg_config.delete_source:
+        if ffmpeg_config.delete_source and Path(file).exists():
             await delete_file(file)
-        if config and not write_thumbnail and embed_thumbnail:
+        if (
+            config
+            and not write_thumbnail
+            and embed_thumbnail
+            and Path(thumbnail_path).exists()
+        ):
             await delete_file(thumbnail_path)
-            
+
         ffmpeg_config.overwrite = overwrite
 
         return ffmpeg_config.get_output_filename()
