@@ -128,6 +128,17 @@ class BinaryManager:
         :rtype: AsyncGenerator[SetupProgress, Any]
         """
         system = platform.system().lower()
+        ytdlp = shutil.which("yt-dlp")
+        if ytdlp:
+            yield SetupProgress(
+                file="yt-dlp",
+                download_file_progress=DownloadFileProgress(
+                    status=ProgressStatus.COMPLETED,
+                    downloaded_bytes=0,
+                    total_bytes=0,
+                    percentage=100,
+                )
+            )
 
         if system == "windows":
             url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
