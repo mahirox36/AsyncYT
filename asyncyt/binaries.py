@@ -829,8 +829,7 @@ class AsyncFFmpeg(BinaryManager):
                 return file
 
             # Set up FFmpeg format conversion if needed
-            if needs_format and not config.extract_audio:
-                ffmpeg_config.video_format = config.video_format
+            ffmpeg_config.video_format = config.video_format
             if needs_format and config.extract_audio:
                 ffmpeg_config.audio_codec = ffmpeg_config.get_audio_codec(
                     AudioFormat(config.audio_format)
@@ -896,9 +895,9 @@ class AsyncFFmpeg(BinaryManager):
 
         for input_file in ffmpeg_config.inputs:
             input_path = Path(input_file.path)
-            logger.debug(f"Checking renaming for {input_path}")
+            logger.debug(f"Checking renaming for {input_path} for {output_file_path}")
             try:
-                if input_path.samefile(output_file_path):
+                if input_path.name == output_file_path.name:
                     logger.debug(f"Renaming Triggered")
                     new_path = get_unique_path(input_path.parent, input_path.name)
                     logger.debug(f"New name: {new_path}")
