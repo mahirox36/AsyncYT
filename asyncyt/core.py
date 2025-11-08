@@ -15,7 +15,7 @@ import logging
 import warnings
 import tempfile
 
-from .enums import ProgressStatus
+from .enums import ProgressStatus, VideoFormat
 from .exceptions import *
 from .basemodels import *
 from .utils import (
@@ -128,8 +128,8 @@ class AsyncYT(AsyncFFmpeg):
 
         :param args: Positional arguments (url, config, progress_callback, DownloadRequest).
         :param kwargs: Keyword arguments (url, config, progress_callback, request).
-        :return: Tuple of (url, config, progress_callback)
-        :rtype: Tuple[str, Optional[DownloadConfig], Optional[Callable]]
+        :return: Tuple of (url, config, progress_callback, finalize)
+        :rtype: Tuple[str, Optional[DownloadConfig], Optional[Callable], bool]
         :raises TypeError: If arguments are invalid.
         """
 
@@ -138,6 +138,7 @@ class AsyncYT(AsyncFFmpeg):
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None
+        finalize: bool = False
         if "url" in kwargs:
             url = kwargs.get("url")  # type: ignore
             if not isinstance(url, str):
@@ -150,6 +151,10 @@ class AsyncYT(AsyncFFmpeg):
             progress_callback = kwargs.get("progress_callback")  # type: ignore
             if not isinstance(progress_callback, Callable2):
                 raise TypeError("progress_callback must be callable!")
+        if "finalize" in kwargs:
+            finalize = kwargs.get("finalize")  # type: ignore
+            if not isinstance(finalize, bool):
+                raise TypeError("finalize must be bool!")
         if "request" in kwargs:
             request = kwargs.get("request")
             if not isinstance(request, DownloadRequest):
@@ -161,6 +166,8 @@ class AsyncYT(AsyncFFmpeg):
                 url = arg
             elif isinstance(arg, DownloadConfig):
                 config = arg
+            elif isinstance(arg, bool):
+                finalize = arg
             elif isinstance(arg, Callable):
                 progress_callback = arg
             elif isinstance(arg, DownloadRequest):
@@ -169,7 +176,63 @@ class AsyncYT(AsyncFFmpeg):
         if not url:
             raise TypeError("url is a must!")
 
-        return (url, config, progress_callback)
+        return (url, config, progress_callback, finalize)
+
+    async def finalize_download(
+        self,
+        temp_dir: Union["tempfile.TemporaryDirectory", Path],
+        output_dir: Path,
+        config: "DownloadConfig",
+    ) -> None:
+        """
+        Move processed files from the temporary directory to the final output directory.
+
+        :param temp_dir: The temporary directory object (will be cleaned up).
+        :type temp_dir: Union[tempfile.TemporaryDirectory, Path]
+        :param output_dir: The destination directory for final files.
+        :type output_dir: Path
+        :param config: The download configuration (used for overwrite settings).
+        :type config: DownloadConfig
+        """
+
+        if isinstance(temp_dir, tempfile.TemporaryDirectory):
+            temp_dir = Path(temp_dir.name)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Iterate through all files inside the temporary directory
+            for item in temp_dir.iterdir():
+                dest_path = output_dir / item.name
+
+                # Handle name conflicts
+                if dest_path.exists():
+                    if config.ffmpeg_config.overwrite:
+                        destination = dest_path
+                    else:
+                        destination = Path(get_unique_path(output_dir, item.name))
+                else:
+                    destination = dest_path
+
+                # Try to move the file
+                try:
+                    await asyncio.to_thread(shutil.move, str(item), str(destination))
+                    logger.debug(f"Moved {item} → {destination}")
+                except Exception as e:
+                    logger.error(f"Failed to move {item} to {destination}: {e}")
+
+        except Exception as e:
+            logger.exception(f"Unexpected error during finalize: {e}")
+        finally:
+            # Always clean up the temp directory, even if moves failed
+            try:
+                if isinstance(temp_dir, Path):
+                    if temp_dir.exists():
+                        await asyncio.to_thread(shutil.rmtree, temp_dir)
+                else:
+                    await asyncio.to_thread(temp_dir.cleanup)
+                logger.debug(f"Temporary directory {temp_dir.name} cleaned up.")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp dir {temp_dir.name}: {e}")
 
     @overload
     async def download(
@@ -179,7 +242,8 @@ class AsyncYT(AsyncFFmpeg):
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
-    ) -> str: ...
+        finalize: bool = True
+    ) -> Path: ...
 
     @overload
     async def download(
@@ -188,16 +252,17 @@ class AsyncYT(AsyncFFmpeg):
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
-    ) -> str: ...
+        finalize: bool = True
+    ) -> Path: ...
 
-    async def download(self, *args, **kwargs) -> str:
+    async def download(self, *args, **kwargs) -> Path:
         """
         Asynchronously download media from a given URL using yt-dlp, track progress, and process the output file.
 
         :param args: url (str) or request (DownloadRequest)
         :param kwargs: config (Optional[DownloadConfig]), progress_callback (Optional[Callable])
-        :return: The filename of the output File.
-        :rtype: str
+        :return: The full File output.
+        :rtype: Path
         :raises DownloadAlreadyExistsError: If a download with the same ID is already in progress.
         :raises YtdlpDownloadError: If yt-dlp returns a non-zero exit code.
         :raises Exception: If the output file cannot be determined from yt-dlp output.
@@ -205,7 +270,7 @@ class AsyncYT(AsyncFFmpeg):
         :raises FileNotFoundError: If FFmpeg wasn't installed.
         """
 
-        url, config, progress_callback = self._get_config(*args, **kwargs)
+        url, config, progress_callback, finalize = self._get_config(*args, **kwargs)
         if not config:
             config = DownloadConfig()
 
@@ -218,7 +283,7 @@ class AsyncYT(AsyncFFmpeg):
         # Ensure output directory exists
         output_dir = Path(config.output_path)
         output_dir.mkdir(parents=True, exist_ok=True)
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory(delete=False)
         temp_path = Path(temp_dir.name)
         logger.debug(temp_path)
         config.output_path = str(temp_path.absolute())
@@ -227,22 +292,16 @@ class AsyncYT(AsyncFFmpeg):
             raise FileNotFoundError("FFmpeg isn't installed")
 
         config.ffmpeg_config.ffmpeg_path = str(self.ffmpeg_path)
-        _original_embed_thumbnail = config.embed_thumbnail
-        _original_write_thumbnail = config.write_thumbnail
-        if config.embed_thumbnail:
-            config.embed_thumbnail = False
-            config.write_thumbnail = True
 
         # Build yt-dlp command
-        cmd = await self._build_download_command(url, config)
+        cmd = self._build_download_command(url, config)
 
         # Create progress tracker
         progress = DownloadProgress(url=url, percentage=0, id=id)
 
-        output_file: Optional[str] = None  # Initialize properly
+        output_file: Optional[str] = None
 
         try:
-            # Execute download
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -253,7 +312,6 @@ class AsyncYT(AsyncFFmpeg):
             self._downloads[id] = process
             output: List[str] = []
 
-            # Monitor yt-dlp progress
             async for line in self._read_process_output(process):
                 line = line.strip()
                 output.append(line)
@@ -265,28 +323,13 @@ class AsyncYT(AsyncFFmpeg):
                     if progress_callback and progress.percentage > old_percentage:
                         await call_callback(progress_callback, progress)
 
-                    # Robust output filename extraction
-                    valid_exts = (
-                        # Audio
-                        ".mp3",
-                        ".m4a",
-                        ".wav",
-                        ".flac",
-                        ".ogg",
-                        ".opus",
-                        ".aac",
-                        # Video
-                        ".mp4",
-                        ".webm",
-                        ".mkv",
-                        ".avi",
-                        ".flv",
-                        ".mov",
+                    # safer filename detection
+                    match = re.search(
+                        r"(?i)([^\s]+?\.(?:mp4|m4a|mp3|webm|mkv|wav|flac|ogg|opus|aac))",
+                        line,
                     )
-                    if not output_file and line.lower().endswith(valid_exts):
-                        # Verify the file actually exists and is an absolute path
-                        if os.path.isabs(line) and os.path.exists(line):
-                            output_file = line
+                    if not output_file and match and os.path.exists(match.group(1)):
+                        output_file = os.path.abspath(match.group(1))
 
             returncode = await process.wait()
 
@@ -298,45 +341,36 @@ class AsyncYT(AsyncFFmpeg):
             if not output_file:
                 raise Exception("Could not determine output file from yt-dlp")
 
+            progress.status = ProgressStatus.DOWNLOADED
+            progress.percentage = 100.0
             if progress_callback:
-                progress.status = ProgressStatus.DOWNLOADED
-                progress.percentage = 100.0
                 await call_callback(progress_callback, progress)
 
-            config.embed_thumbnail = _original_embed_thumbnail
-            config.write_thumbnail = _original_write_thumbnail
+            ffmpeg_config = config.ffmpeg_config
+            ffmpeg_config.output_path = str(temp_path)
+            ext = output_file.split(".")[-1].lower()  # lowercase to be safe
+
+            # Check if extension is in VideoFormat
+            is_video = ext in (fmt.value for fmt in VideoFormat)
+            if not config.extract_audio:
+                ffmpeg_config.video_format = config.video_format
+            elif config.extract_audio and is_video:
+                ffmpeg_config.extract_audio = True
+                ffmpeg_config.audio_codec = ffmpeg_config.get_audio_codec(config.audio_format)
 
             result = await self.process(
                 output_file,
-                config.ffmpeg_config,
-                config,
+                ffmpeg_config,
                 progress_callback,
-                progress,
-                url,
+                id=id,
+                progress=progress,
             )
+            config.output_path = str(output_dir.absolute().resolve())
+            if finalize:
+                await self.finalize_download(temp_dir, output_dir, config)
+                return output_dir / result
 
-            config.output_path = str(output_dir)
-
-            for item in temp_path.iterdir():
-                dest_path = output_dir / item.name
-
-                if dest_path.exists():
-                    if config.ffmpeg_config.overwrite:
-                        destination = dest_path
-                    else:
-                        destination = get_unique_path(output_dir, item.name)
-                        destination = Path(destination)
-                else:
-                    destination = dest_path
-
-                try:
-                    shutil.move(str(item), str(destination))
-                except Exception as e:
-                    logger.error(f"Failed to move {item} to {destination}: {e}")
-
-            temp_dir.cleanup()
-
-            return result
+            return Path(temp_path) / result
 
         except asyncio.CancelledError:
             if id in self._downloads:
@@ -344,7 +378,11 @@ class AsyncYT(AsyncFFmpeg):
                 process.kill()
                 await process.wait()
             raise DownloadGotCanceledError(id)
+        except Exception:
+            raise
+
         finally:
+            # await asyncio.shield(asyncio.to_thread(temp_dir.cleanup))
             self._downloads.pop(id, None)
 
     async def cancel(self, download_id: str):
@@ -391,7 +429,7 @@ class AsyncYT(AsyncFFmpeg):
         """
 
         try:
-            url, config, progress_callback = self._get_config(*args, **kwargs)
+            url, config, progress_callback, finalize = self._get_config(*args, **kwargs)
             config = config or DownloadConfig()
             id = get_id(url, config)
 
@@ -414,7 +452,7 @@ class AsyncYT(AsyncFFmpeg):
                 )
 
             # Download the video
-            filename = await self.download(url, config, progress_callback)
+            filename = await self.download(url, config, progress_callback, finalize)
             file = Path(filename)
             title = re.sub(r'[\\/:"*?<>|]', "_", video_info.title)
             new_file = get_unique_filename(file, title)

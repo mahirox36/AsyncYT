@@ -137,7 +137,7 @@ class BinaryManager:
                     downloaded_bytes=0,
                     total_bytes=0,
                     percentage=100,
-                )
+                ),
             )
 
         if system == "windows":
@@ -394,9 +394,28 @@ class BinaryManager:
                 version=__version__,
             )
 
-    async def _build_download_command(
-        self, url: str, config: DownloadConfig
-    ) -> List[str]:
+    def _get_format_selector(self, quality: "Quality") -> str:
+        """Get yt-dlp format selector for quality."""
+        if quality == Quality.BEST:
+            return (
+                "bestvideo[vcodec=vp9]+bestaudio[acodec=opus]/"
+                "bestvideo[vcodec=h264]+bestaudio[acodec=aac]/"
+                "bestvideo+bestaudio/best"
+            )
+        elif quality == Quality.WORST:
+            return "worst"
+        elif quality == Quality.AUDIO_ONLY:
+            return "bestaudio/best"
+        elif quality == Quality.VIDEO_ONLY:
+            return "bestvideo/best"
+        else:
+            height = quality.value.replace("p", "")
+            return (
+                f"bestvideo[height<={height}][vcodec=h264]+bestaudio[acodec=aac]/"
+                f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
+            )
+
+    def _build_download_command(self, url: str, config: "DownloadConfig") -> List[str]:
         """
         Build the yt-dlp command based on configuration.
 
@@ -411,98 +430,91 @@ class BinaryManager:
         cmd = [str(self.ytdlp_path)]
 
         # Basic options
-        cmd.extend(["--no-warnings", "--progress"])
-        # Quality selection
+        cmd.extend(
+            [
+                "--no-warnings",
+                "--progress",
+                "--newline",
+                "--no-playlist",
+            ]
+        )
+
+        # Quality and format
+        selected_quality = (
+            Quality.AUDIO_ONLY if config.extract_audio else config.quality
+        )
+        cmd.extend(["-f", self._get_format_selector(selected_quality)])
+
         if config.extract_audio:
-            cmd.extend(
-                [
-                    "-x",
-                    "--audio-format",
-                    "best",
-                ]
-            )
-        else:
-            quality = Quality(config.quality)
+            cmd.extend(["--extract-audio", "--audio-format", "mp3"])
 
-            if quality == Quality.BEST:
-                format_selector = (
-                    "bestvideo[vcodec=vp9]+bestaudio[acodec=opus]/"
-                    "bestvideo[vcodec=h264]+bestaudio[acodec=aac]/"
-                    "bestvideo+bestaudio/"
-                    "best"
-                )
-            elif quality == Quality.WORST:
-                format_selector = "worst"
-            elif quality == Quality.AUDIO_ONLY:
-                format_selector = "bestaudio"
-            elif quality == Quality.VIDEO_ONLY:
-                format_selector = "bestvideo"
-            else:
-                height = quality.value.replace("p", "")
-                format_selector = (
-                    f"bestvideo[height<={height}][vcodec=h264]+bestaudio[acodec=aac]/"
-                    f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
-                )
-
-            cmd.extend(["-f", format_selector])
-
-        # Filename template
+        # Output template - use safe template that preserves Unicode
         if config.custom_filename:
             cmd.extend(["-o", config.custom_filename])
         else:
-            cmd.extend(["-o", "%(title)s.%(ext)s"])
+            # Use sanitized version but keep Unicode
+            cmd.extend(["-o", "%(title).200B.%(ext)s"])
 
-        # Subtitles
-        if config.write_subs:
-            cmd.extend(["--write-subs", "--sub-lang", config.subtitle_lang])
-        if config.embed_subs:
-            cmd.append("--embed-subs")
-
-        # Additional options
+        # Thumbnail handling
         if config.write_thumbnail:
             cmd.extend(["--write-thumbnail", "--convert-thumbnails", "jpg"])
         if config.embed_thumbnail:
             cmd.append("--embed-thumbnail")
+
+        # Metadata and subtitles
+        if config.write_subs:
+            cmd.extend(["--write-subs", "--sub-lang", config.subtitle_lang])
+        if config.embed_subs:
+            cmd.append("--embed-subs")
+        if config.embed_metadata:
+            cmd.append("--add-metadata")
         if config.write_info_json:
             cmd.append("--write-info-json")
+
+        # Network options
         if config.cookies_file:
-            cmd.extend(["--cookies", config.cookies_file])
+            cmd.extend(["--cookies", str(Path(config.cookies_file).resolve())])
         if config.proxy:
             cmd.extend(["--proxy", config.proxy])
         if config.rate_limit:
             cmd.extend(["--limit-rate", config.rate_limit])
-        if config.embed_metadata:
-            cmd.append("--add-metadata")
 
         # Retry options
-        cmd.extend(["--retries", str(config.retries)])
-        cmd.extend(["--fragment-retries", str(config.fragment_retries)])
+        cmd.extend(
+            [
+                "--retries",
+                str(config.retries),
+                "--fragment-retries",
+                str(config.fragment_retries),
+            ]
+        )
 
-        # FFmpeg path
+        # FFmpeg location
         if self.ffmpeg_path:
             cmd.extend(["--ffmpeg-location", str(self.ffmpeg_path)])
 
-        # Custom options
-        for key, value in config.custom_options.items():
-            if isinstance(value, bool):
-                if value:
-                    cmd.append(f"--{key}")
-            else:
-                cmd.extend([f"--{key}", str(value)])
-
+        # Progress template for parsing
         cmd.extend(
             [
                 "--progress-template",
                 "download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
             ]
         )
-        cmd.append("--no-update")
-        cmd.append("--no-playlist")
-        cmd.append("--newline")
         cmd.append("--restrict-filenames")
         cmd.extend(["--print", "after_move:filepath"])
 
+        # Output metadata as JSON for reliable parsing
+        # cmd.append("--dump-single-json")
+
+        # Custom options
+        for key, value in config.custom_options.items():
+            if isinstance(value, bool) and value:
+                cmd.append(f"--{key}")
+            elif not isinstance(value, bool):
+                cmd.extend([f"--{key}", str(value)])
+
         cmd.append(url)
+
         return cmd
 
     async def _read_process_output(self, process):
@@ -515,11 +527,22 @@ class BinaryManager:
         """
         assert process.stdout is not None, "Process must have stdout=PIPE"
 
-        while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            yield line.decode("utf-8", errors="replace").rstrip()
+        try:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                data = line.decode("utf-8", errors="replace").rstrip()
+                yield data
+
+        except ValueError as e:
+            if "chunk is longer than limit" in str(e):
+                # yt-dlp --dump-single-json workaround
+                data = await process.stdout.read()
+                data = data.decode("utf-8", errors="replace").rstrip()
+                yield data
+            else:
+                raise
 
     def _parse_progress(self, line: str, progress: DownloadProgress) -> None:
         """
@@ -769,17 +792,90 @@ class AsyncFFmpeg(BinaryManager):
             streams=streams,
         )
 
+    def _needs_process(
+        self, ffmpeg_config: FFmpegConfig, media_info: MediaInfo
+    ) -> bool:
+        # Extract flags for readability
+        fmt = ffmpeg_config.video_format
+        vcodec = ffmpeg_config.video_codec
+        acodec = ffmpeg_config.audio_codec
+
+        # --- 1. Check if output format mismatch ---
+        if fmt and not media_info.format_name.lower().startswith(fmt.value.lower()):
+            return True
+
+        # --- 2. Handle removal/extraction cases ---
+        if (
+            ffmpeg_config.extract_audio
+            or ffmpeg_config.remove_video
+            or ffmpeg_config.remove_audio
+        ):
+            return True
+
+        # --- 3. Check codecs ---
+        for stream in media_info.streams:
+            if stream.codec_type == "video":
+                if vcodec != VideoCodec.COPY and stream.codec_name != vcodec.value:
+                    return True
+            elif stream.codec_type == "audio":
+                if acodec != AudioCodec.COPY and stream.codec_name != acodec.value:
+                    return True
+
+        # --- 4. Resolution, FPS, bitrate, etc. ---
+        if any(
+            [
+                ffmpeg_config.width,
+                ffmpeg_config.height,
+                ffmpeg_config.scale_filter,
+                ffmpeg_config.fps,
+                ffmpeg_config.video_bitrate,
+                ffmpeg_config.audio_bitrate,
+                ffmpeg_config.audio_sample_rate,
+                ffmpeg_config.audio_channels,
+            ]
+        ):
+            return True
+
+        # --- 5. Filters ---
+        if ffmpeg_config.video_filters or ffmpeg_config.audio_filters:
+            return True
+
+        return False
+
+    async def extract_thumbnail(self, file: str) -> Optional[str]:
+        output_thumb = str(Path(file).with_suffix(".jpg"))
+        cmd = [
+            self.ffmpeg_path,
+            "-i",
+            file,
+            "-map",
+            "0:v",
+            "-map",
+            "-0:V",
+            "-an",
+            "-vcodec",
+            "mjpeg",
+            "-vframes",
+            "1",
+            output_thumb,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await proc.communicate()
+        return output_thumb if Path(output_thumb).exists() else None
+
     async def process(
         self,
         file: str,
         ffmpeg_config: FFmpegConfig,
-        config: Optional[DownloadConfig] = None,
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
+        skip_checks: bool = False,
+        id: Optional[str] = None,
         progress: Optional[DownloadProgress] = None,
-        url: Optional[str] = None,
-    ):
+    ) -> str:
         """
         Asynchronously process a media file using FFmpeg, handling format conversion, codec compatibility, and progress reporting.
 
@@ -787,14 +883,14 @@ class AsyncFFmpeg(BinaryManager):
         :type file: str
         :param ffmpeg_config: Configuration object for FFmpeg processing.
         :type ffmpeg_config: FFmpegConfig
-        :param config: Download configuration, including output path and format settings.
-        :type config: Optional[DownloadConfig]
         :param progress_callback: Callback function to report progress updates.
         :type progress_callback: Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]
+        :param skip_checks: Skips checks for the processing file.
+        :type skip_checks: bool
+        :param id: the ID of the process.
+        :type id: str
         :param progress: Initial progress state, if available.
         :type progress: Optional[DownloadProgress]
-        :param url: Source URL of the media file.
-        :type url: Optional[str]
         :return: Filename of the processed output file.
         :rtype: str
         :raises CodecCompatibilityError: If the desired codec and format are incompatible and error raising is enabled.
@@ -802,123 +898,27 @@ class AsyncFFmpeg(BinaryManager):
         :raises FFmpegProcessingError: If FFmpeg returns a non-zero exit code during processing.
         """
 
+        media_info = await self.get_file_info(file)
+
         if not progress:
             progress = DownloadProgress(url="", percentage=0, id="")
 
-        if config and url:
-            output_dir = Path(config.output_path)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            overwrite = ffmpeg_config.overwrite
-            ffmpeg_config.overwrite = True
-            embed_thumbnail = False
-            write_thumbnail = False
-            if config.embed_thumbnail:
-                embed_thumbnail = True
-                write_thumbnail = config.write_thumbnail
+        ffmpeg_config.add_media_input(file)
 
-            if embed_thumbnail:
-                thumbnail_path = str(Path(file).with_suffix(".jpg"))
-                ffmpeg_config.add_thumbnail_input(thumbnail_path)
-            id = get_id(url, config)
-            ffmpeg_config.video_format = None
-            ffmpeg_config.output_filename = Path(file).stem
-            ffmpeg_config.add_media_input(file)
-            original_ext = os.path.splitext(os.path.basename(file))[1][1:].lower()
-            if not config.extract_audio:
-                ext = VideoFormat(original_ext)
-                needs_format = (
-                    config.video_format is not None and ext != config.video_format
-                )
-            else:
-                ext = AudioFormat(original_ext)
-                needs_format = (
-                    config.audio_format != ext if config.audio_format else False
-                )
+        if not skip_checks and not self._needs_process(ffmpeg_config, media_info):
+            return file
+        if not any(inp.type == InputType.THUMBNAIL for inp in ffmpeg_config.inputs):
+            thumb = await self.extract_thumbnail(file)
+            if thumb:
+                ffmpeg_config.add_thumbnail_input(thumb)
 
-            # Return early if no post-processing needed
-            if ffmpeg_config.is_empty and not needs_format:
-                return file
-
-            # Set up FFmpeg format conversion if needed
-            ffmpeg_config.video_format = config.video_format
-            if needs_format and config.extract_audio:
-                ffmpeg_config.audio_codec = ffmpeg_config.get_audio_codec(
-                    AudioFormat(config.audio_format)
-                )
-
-            media_info = await self.get_file_info(file)
-            IMAGE_CODECS = {
-                "png",
-                "mjpeg",
-                "bmp",
-                "tiff",
-                "gif",
-                "jpeg2000",
-                "rawvideo",
-            }
-            for stream in media_info.streams:
-                if stream.codec_type == "video" and stream.codec_name in IMAGE_CODECS:
-                    ffmpeg_config.index_thumbnail_input(stream.index)
-                if (
-                    stream.codec_type == "video"
-                    and stream.codec_name not in IMAGE_CODECS
-                ):
-                    current_codec = VideoCodec[
-                        stream.codec_name.upper()  # pyright: ignore[reportOptionalMemberAccess]
-                    ]
-
-                    if (
-                        ffmpeg_config.video_codec == VideoCodec.COPY
-                        and ffmpeg_config.video_format
-                    ):
-                        if not is_compatible(ffmpeg_config.video_format, current_codec):
-                            if not ffmpeg_config.no_codec_compatibility_error:
-                                raise CodecCompatibilityError(
-                                    current_codec, ffmpeg_config.video_format
-                                )
-                            ffmpeg_config.video_format = suggest_compatible_formats(
-                                current_codec
-                            )[0]
-
-                    if (
-                        ffmpeg_config.video_codec != VideoCodec.COPY
-                        and ffmpeg_config.video_format
-                    ):
-                        desired_codec = ffmpeg_config.video_codec
-                        if not is_compatible(ffmpeg_config.video_format, desired_codec):
-                            if not ffmpeg_config.no_codec_compatibility_error:
-                                raise CodecCompatibilityError(
-                                    desired_codec, ffmpeg_config.video_format
-                                )
-                            ffmpeg_config.video_format = suggest_compatible_formats(
-                                current_codec
-                            )[0]
-
-            # Start FFmpeg processing
-            if progress_callback:
+        if progress_callback:
                 progress.status = ProgressStatus.ENCODING
                 progress.percentage = 0
-
-            ffmpeg_config.output_path = str(output_dir.absolute())
-        output_file_path = (
-            Path(ffmpeg_config.output_path) / ffmpeg_config.get_output_filename()
-        )
-
-        for input_file in ffmpeg_config.inputs:
-            input_path = Path(input_file.path)
-            logger.debug(f"Checking renaming for {input_path} for {output_file_path}")
-            try:
-                if input_path.name == output_file_path.name:
-                    logger.debug(f"Renaming Triggered")
-                    new_path = get_unique_path(input_path.parent, input_path.name)
-                    logger.debug(f"New name: {new_path}")
-                    input_path.rename(new_path)
-
-                    input_file.path = str(new_path.resolve())
-            except FileNotFoundError as e:
-                logger.warning(e)
-
         ffmpeg_cmd = ffmpeg_config.build_command()
+        output_file_path = Path(
+            ffmpeg_config.output_path
+        ) / ffmpeg_config.get_output_filename(Path(file).suffix.lstrip("."))
         if not ffmpeg_config.overwrite and output_file_path.exists():
             raise FFmpegOutputExistsError(str(output_file_path.absolute()))
 
@@ -926,10 +926,10 @@ class AsyncFFmpeg(BinaryManager):
             *ffmpeg_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=output_dir,
+            cwd=ffmpeg_config.output_path,
         )
 
-        if config and url:
+        if id:
             self._downloads[id] = ffmpeg_process
 
         ffmpeg_output: List[str] = []
@@ -949,7 +949,7 @@ class AsyncFFmpeg(BinaryManager):
         if ffmpeg_returncode != 0:
             raise FFmpegProcessingError(
                 input_file=file,
-                output=ffmpeg_output,
+                output=ffmpeg_output[-20:],
                 cmd=ffmpeg_cmd,
                 error_code=ffmpeg_returncode,
             )
@@ -959,16 +959,11 @@ class AsyncFFmpeg(BinaryManager):
             progress.percentage = 100.0
             await call_callback(progress_callback, progress)
 
+        for inp in ffmpeg_config.inputs:
+            if inp.type == InputType.THUMBNAIL and Path(inp.path).exists():
+                await delete_file(inp.path)
+
         if ffmpeg_config.delete_source and Path(file).exists():
             await delete_file(file)
-        if (
-            config
-            and not write_thumbnail
-            and embed_thumbnail
-            and Path(thumbnail_path).exists()
-        ):
-            await delete_file(thumbnail_path)
-
-        ffmpeg_config.overwrite = overwrite
 
         return ffmpeg_config.get_output_filename()

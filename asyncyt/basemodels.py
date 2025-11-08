@@ -275,7 +275,6 @@ class FFmpegConfig(BaseModel):
         default_factory=list, description="Custom output options"
     )
     _original_audio_type: Optional[str] = None
-    _thumbnail_indexed: Optional[int] = None
 
     def add_input(
         self,
@@ -342,15 +341,6 @@ class FFmpegConfig(BaseModel):
         :type options: Optional[List[str]]
         """
         self.add_input(path, InputType.THUMBNAIL, options)
-
-    def index_thumbnail_input(self, index: int):
-        """
-        Set the thumbnail stream index.
-
-        :param index: Stream index for thumbnail.
-        :type index: int
-        """
-        self._thumbnail_indexed = index
 
     @property
     def is_empty(self):
@@ -489,6 +479,78 @@ class FFmpegConfig(BaseModel):
         # Frame rate
         if has_video and self.fps:
             cmd.extend(["-r", str(self.fps)])
+
+        # Thumbnail embedding rules
+        EMBED_SUPPORT = {
+            "mkv": True,  # via -attach
+            "mp3": True,  # via ID3v2
+            "flac": True,  # via METADATA_BLOCK_PICTURE
+            "m4a": True,  # via -disposition:v attached_pic
+            "mp4": False,  # not natively supported, only external
+            "ogg": False,
+            "wav": False,
+        }
+        thumbnail_inputs = [
+            inp for inp in self.inputs if inp.type == InputType.THUMBNAIL
+        ]
+        supports_embed = self.video_format and EMBED_SUPPORT.get(
+            self.video_format.value, False
+        )
+
+        if thumbnail_inputs:
+            thumb_input = thumbnail_inputs[0]
+            if supports_embed:
+                # Format supports embedding — attach or map properly
+                is_audio_target = self.extract_audio or not any(
+                    inp.type == InputType.VIDEO for inp in self.inputs
+                )
+                if self.video_format == VideoFormat.MKV:
+                    cmd.extend(
+                        [
+                            "-attach",
+                            thumb_input.path,
+                            "-metadata:s:t",
+                            "mimetype=image/jpeg",
+                        ]
+                    )
+                elif (
+                    is_audio_target and self.get_audio_format() == AudioFormat.M4A.value
+                ):
+                    cmd.extend(
+                        [
+                            "-map",
+                            f"{len(self.inputs)-1}:v:0",
+                            "-c:v",
+                            "mjpeg",
+                            "-disposition:v:0",
+                            "attached_pic",
+                        ]
+                    )
+                elif (
+                    is_audio_target and self.get_audio_format() == AudioFormat.MP3.value
+                ):
+                    # MP3 cover embedding via ID3v2
+                    cmd.extend(
+                        [
+                            "-i",
+                            thumb_input.path,
+                            "-map",
+                            "0",
+                            "-map",
+                            "1",
+                            "-c",
+                            "copy",
+                            "-id3v2_version",
+                            "3",
+                            "-metadata:s:v",
+                            "title=Album cover",
+                            "-metadata:s:v",
+                            "comment=Cover (front)",
+                        ]
+                    )
+            else:
+                # No embed support — maybe output thumbnail separately later
+                pass
 
         # Stream handling
         if self.remove_video or self.extract_audio:
@@ -632,7 +694,7 @@ class FFmpegConfig(BaseModel):
         :return: Audio format extension.
         :rtype: str
         """
-        original_ext = original_ext or self._original_audio_type or "audio"
+        original_ext = original_ext or self._original_audio_type or "mp3"
         audio_extensions = {
             AudioCodec.MP3: "mp3",
             AudioCodec.AAC: "aac",
@@ -808,6 +870,28 @@ class FFmpegProgress(BaseModel):
     speed: str = "0x"
     progress: str = "unknown"
 
+    @field_validator("frame", "total_size", "out_time_us", mode="before")
+    @classmethod
+    def coerce_to_int(cls, v):
+        """Convert string values to integers"""
+        if isinstance(v, str):
+            try:
+                return int(v)
+            except ValueError:
+                return 0
+        return v
+
+    @field_validator("fps", mode="before")
+    @classmethod
+    def coerce_to_float(cls, v):
+        """Convert string values to floats"""
+        if isinstance(v, str):
+            try:
+                return float(v)
+            except ValueError:
+                return 0.0
+        return v
+
     @property
     def out_time_seconds(self) -> float:
         return self.out_time_us / 1_000_000.0
@@ -819,9 +903,8 @@ class FFmpegProgress(BaseModel):
             raise KeyError(f"{key!r} is not a valid field of FFmpegProgress")
 
     def __getitem__(self, key: str):
-        # Pydantic models store fields in __dict__, so we can do setattr
         if key in self.model_fields:
-            getattr(self, key)
+            return getattr(self, key)
         else:
             raise KeyError(f"{key!r} is not a valid field of FFmpegProgress")
 
