@@ -26,7 +26,6 @@ It comes with auto binary setup, progress tracking, playlist support, search, an
 
 - Python 3.11+
 - Cross-platform – Windows, macOS, Linux
-- Dependencies: pydantic (auto-installed)
 - Optional: yt-dlp and ffmpeg (auto-downloaded if not present)
 
 ## 📦 Install

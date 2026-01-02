@@ -164,7 +164,7 @@ class FFmpegConfig(BaseModel):
     )
 
     # Video settings
-    video_codec: VideoCodec = Field(default=VideoCodec.COPY, description="Video codec")
+    video_codec: VideoCodec = Field(default=VideoCodec.H264, description="Video codec")
     video_format: Optional[VideoFormat] = Field(
         default=None, description="Output container format"
     )
@@ -402,13 +402,44 @@ class FFmpegConfig(BaseModel):
         if self.overwrite:
             cmd.append("-y")
 
-        # Input handling with reversed order for proper stream mapping
+
         input_sources = list(reversed(self.inputs))
-        for inp in input_sources:
+
+
+        thumbnail_inputs = [
+            inp for inp in self.inputs if inp.type == InputType.THUMBNAIL
+        ]
+        has_thumbnail = len(thumbnail_inputs) > 0
+        thumb_input_idx = None
+        input_count = 0
+
+        for idx, inp in enumerate(input_sources):
+            if (
+                inp.type == InputType.THUMBNAIL
+                and self.video_format == VideoFormat.MKV
+                and has_thumbnail
+            ):
+                cmd.extend(
+                    [
+                        "-attach",
+                        inp.path,
+                        "-metadata:s:t",
+                        "mimetype=image/jpeg",
+                    ]
+                )
+                continue
+
+            if inp.type == InputType.THUMBNAIL and has_thumbnail:
+                cmd.extend(inp.options)
+                cmd.extend(["-i", inp.path])
+                thumb_input_idx = input_count
+                input_count += 1
+                continue
+
             cmd.extend(inp.options)
             cmd.extend(["-i", inp.path])
+            input_count += 1
 
-        # Time range options - applied globally
         if self.start_time:
             cmd.extend(["-ss", self.start_time])
         if self.duration:
@@ -416,47 +447,95 @@ class FFmpegConfig(BaseModel):
         elif self.end_time:
             cmd.extend(["-to", self.end_time])
 
-        # Determine output format constraints
+
         is_audio_only = self.extract_audio or self.remove_video
         has_video = not (is_audio_only or self.remove_video)
         has_audio = not self.remove_audio
 
-        # Format-specific codec compatibility handling
         if self.video_format:
             fmt = VideoFormat(self.video_format)
-            # Codec compatibility checks for different container formats
-            if not is_compatible(format=fmt, codec=self.video_codec):
-                if not self.no_codec_compatibility_error:
-                    raise CodecCompatibilityError(self.video_codec, fmt)
-                else:
-                    self.video_format = suggest_compatible_formats(self.video_codec)[0]
-            if not is_audio_compatible(format=fmt, codec=self.audio_codec):
-                if not self.no_codec_compatibility_error:
-                    raise CodecCompatibilityError(self.audio_codec, fmt)
-                else:
-                    self.video_format = suggest_audio_compatible_formats(
-                        self.audio_codec
-                    )[0]
+            codec_incompatible = False
 
-        # Video encoding settings
-        if has_video and self.video_codec:
-            if not any(c in cmd for c in ["-c:v:0", "-c:v"]):
-                cmd.extend(["-c:v:0", VideoCodec(self.video_codec).value])
-            if self.video_codec != VideoCodec.COPY:
-                if self.crf is not None:
-                    cmd.extend(["-crf", str(self.crf)])
+            if has_video and self.video_codec != VideoCodec.COPY:
+                codec_incompatible = not is_compatible(fmt, self.video_codec)
+
+            if has_audio and self.audio_codec != AudioCodec.COPY:
+                codec_incompatible = codec_incompatible or not is_audio_compatible(
+                    fmt, self.audio_codec
+                )
+
+            if codec_incompatible:
+                if self.no_codec_compatibility_error:
+                    possible_formats = []
+                    if has_video and self.video_codec != VideoCodec.COPY:
+                        possible_formats = suggest_compatible_formats(self.video_codec)
+                    if has_audio and self.audio_codec != AudioCodec.COPY:
+                        audio_formats = suggest_audio_compatible_formats(
+                            self.audio_codec
+                        )
+                        if possible_formats:
+                            possible_formats = list(
+                                set(possible_formats) & set(audio_formats)
+                            )
+                        else:
+                            possible_formats = audio_formats
+
+                    if possible_formats:
+                        self.video_format = possible_formats[0]
+                    else:
+                        self.video_format = VideoFormat.MKV
+                else:
+                    raise CodecCompatibilityError(self.video_codec, fmt)
+
+        if has_video:
+            has_multi_video = (
+                has_thumbnail
+                and thumb_input_idx is not None
+                and self.video_format != VideoFormat.MKV
+            )
+
+            if self.needs_video_reencode():
+                codec_spec = "-c:v:0" if has_multi_video else "-c:v"
+                cmd.extend(
+                    [
+                        codec_spec,
+                        self.video_codec,
+                        "-crf",
+                        str(self.crf or 18),
+                        "-preset",
+                        Preset(self.preset).value,
+                        "-pix_fmt",
+                        "yuv420p",
+                    ]
+                )
                 if self.video_bitrate:
                     cmd.extend(["-b:v", self.video_bitrate])
-                if self.preset:
-                    cmd.extend(["-preset", Preset(self.preset).value])
+            else:
+                codec_spec = "-c:v:0" if has_multi_video else "-c:v"
+                cmd.extend([codec_spec, "copy"])
 
         # Audio encoding settings
-        if has_audio and self.audio_codec:
-            if not any(c in cmd for c in ["-c:a"]):
+        if has_audio:
+            if self.audio_codec == AudioCodec.COPY:
+                # Copy audio codec as-is
+                cmd.extend(["-c:a", "copy"])
+            else:
                 cmd.extend(["-c:a", AudioCodec(self.audio_codec).value])
-            if self.audio_codec != AudioCodec.COPY:
+
                 if self.audio_bitrate:
                     cmd.extend(["-b:a", self.audio_bitrate])
+                elif self.audio_codec == AudioCodec.AAC:
+                    cmd.extend(["-b:a", "192k"])
+                elif self.audio_codec == AudioCodec.MP3:
+                    cmd.extend(["-b:a", "192k"])
+                elif (
+                    self.audio_codec == AudioCodec.OPUS
+                    or self.audio_codec == AudioCodec.VORBIS
+                ):
+                    cmd.extend(["-q:a", "9"])
+                elif self.audio_codec == AudioCodec.FLAC:
+                    pass
+
                 if self.audio_sample_rate:
                     cmd.extend(["-ar", str(self.audio_sample_rate)])
                 if self.audio_channels:
@@ -480,77 +559,6 @@ class FFmpegConfig(BaseModel):
         if has_video and self.fps:
             cmd.extend(["-r", str(self.fps)])
 
-        # Thumbnail embedding rules
-        EMBED_SUPPORT = {
-            "mkv": True,  # via -attach
-            "mp3": True,  # via ID3v2
-            "flac": True,  # via METADATA_BLOCK_PICTURE
-            "m4a": True,  # via -disposition:v attached_pic
-            "mp4": False,  # not natively supported, only external
-            "ogg": False,
-            "wav": False,
-        }
-        thumbnail_inputs = [
-            inp for inp in self.inputs if inp.type == InputType.THUMBNAIL
-        ]
-        supports_embed = self.video_format and EMBED_SUPPORT.get(
-            self.video_format.value, False
-        )
-
-        if thumbnail_inputs:
-            thumb_input = thumbnail_inputs[0]
-            if supports_embed:
-                # Format supports embedding — attach or map properly
-                is_audio_target = self.extract_audio or not any(
-                    inp.type == InputType.VIDEO for inp in self.inputs
-                )
-                if self.video_format == VideoFormat.MKV:
-                    cmd.extend(
-                        [
-                            "-attach",
-                            thumb_input.path,
-                            "-metadata:s:t",
-                            "mimetype=image/jpeg",
-                        ]
-                    )
-                elif (
-                    is_audio_target and self.get_audio_format() == AudioFormat.M4A.value
-                ):
-                    cmd.extend(
-                        [
-                            "-map",
-                            f"{len(self.inputs)-1}:v:0",
-                            "-c:v",
-                            "mjpeg",
-                            "-disposition:v:0",
-                            "attached_pic",
-                        ]
-                    )
-                elif (
-                    is_audio_target and self.get_audio_format() == AudioFormat.MP3.value
-                ):
-                    # MP3 cover embedding via ID3v2
-                    cmd.extend(
-                        [
-                            "-i",
-                            thumb_input.path,
-                            "-map",
-                            "0",
-                            "-map",
-                            "1",
-                            "-c",
-                            "copy",
-                            "-id3v2_version",
-                            "3",
-                            "-metadata:s:v",
-                            "title=Album cover",
-                            "-metadata:s:v",
-                            "comment=Cover (front)",
-                        ]
-                    )
-            else:
-                # No embed support — maybe output thumbnail separately later
-                pass
 
         # Stream handling
         if self.remove_video or self.extract_audio:
@@ -563,9 +571,11 @@ class FFmpegConfig(BaseModel):
             cmd.extend(["-map_metadata", "-1"])
 
         # Stream mapping with intelligent handling
-        video_stream_count = 0
         stream_mapping = []
         for idx, inp in enumerate(input_sources):
+            if inp.type == InputType.THUMBNAIL:
+                continue
+
             if inp.type == InputType.VIDEO and has_video:
                 stream_spec = (
                     f"{idx}:{inp.stream_index}"
@@ -573,11 +583,8 @@ class FFmpegConfig(BaseModel):
                     else f"{idx}:v:0"
                 )
                 stream_mapping.extend(["-map", stream_spec])
-                video_stream_count += 1
                 if has_audio:
-                    stream_mapping.extend(
-                        ["-map", f"{idx}:a:0?"]
-                    )  # Optional audio stream
+                    stream_mapping.extend(["-map", f"{idx}:a:0?"])
 
             elif inp.type == InputType.AUDIO and has_audio:
                 stream_spec = (
@@ -595,23 +602,35 @@ class FFmpegConfig(BaseModel):
                 )
                 stream_mapping.extend(["-map", stream_spec])
                 if self.video_format == VideoFormat.MKV:
-                    cmd.extend(["-c:s", "copy"])
+                    stream_mapping.extend(["-c:s", "copy"])
                 else:
-                    cmd.extend(["-c:s", "mov_text"])
-
-            elif inp.type == InputType.THUMBNAIL:
-                stream_mapping.extend(["-map", f"{idx}:v:0"])
-                cmd.extend(
-                    [
-                        f"-c:v:{str(video_stream_count)}",
-                        "mjpeg",
-                        "-disposition:v:" + str(video_stream_count),
-                        "attached_pic",
-                    ]
+                    stream_mapping.extend(["-c:s", "mov_text"])
+        if has_thumbnail and thumb_input_idx is not None:
+            stream_mapping.extend(["-map", f"{thumb_input_idx}:v:0"])
+            if (
+                self.video_format == VideoFormat.MP4
+                or self.video_format == VideoFormat.MOV
+            ):
+                stream_mapping.extend(["-c:v:1", "mjpeg"])
+                stream_mapping.extend(["-disposition:v:1", "attached_pic"])
+            elif self.extract_audio or not any(
+                inp.type == InputType.VIDEO for inp in self.inputs
+            ):
+                fmt_val = (
+                    VideoFormat(self.video_format).value if self.video_format else None
                 )
-                video_stream_count += 1
+                if fmt_val == "mp3":
+                    stream_mapping.extend(["-c:v:1", "mjpeg"])
+                    stream_mapping.extend(["-id3v2_version", "3"])
+                    stream_mapping.extend(["-metadata:s:v", "title=Album cover"])
+                    stream_mapping.extend(["-metadata:s:v", "comment=Cover (front)"])
+                elif fmt_val == "m4a":
+                    stream_mapping.extend(["-c:v:1", "mjpeg"])
+                    stream_mapping.extend(["-disposition:v:1", "attached_pic"])
+                elif fmt_val == "flac" or fmt_val == "ogg":
+                    stream_mapping.extend(["-c:v:1", "mjpeg"])
+                    stream_mapping.extend(["-metadata:s:v", "title=Album cover"])
 
-        # Add all valid stream mappings
         if stream_mapping:
             cmd.extend(stream_mapping)
 
@@ -768,6 +787,21 @@ class FFmpegConfig(BaseModel):
             extension = VideoFormat(self.video_format).value
 
         return f"{base_name}.{extension}"
+
+    def needs_video_reencode(self) -> bool:
+        return any(
+            [
+                self.width,
+                self.height,
+                self.scale_filter,
+                self.fps,
+                self.video_filters,
+                self.video_bitrate,
+                self.crf is not None,
+                self.video_codec
+                != VideoCodec.COPY,  # Check if we need to transcode video
+            ]
+        )
 
     @field_validator("output_path")
     def validate_output_path(cls, v):
@@ -932,6 +966,7 @@ class DownloadConfig(BaseModel):
     embed_thumbnail: bool = Field(default=False, description="Embed thumbnail")
     embed_metadata: bool = Field(default=True, description="Embed metadata")
     write_info_json: bool = Field(default=False, description="Write info JSON file")
+    write_live_chat: bool = Field(default=False, description="Download live chat")
     custom_filename: Optional[str] = Field(
         default=None, description="Custom filename template"
     )

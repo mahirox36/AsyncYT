@@ -251,6 +251,8 @@ def get_unique_path(dir: Path, name: str) -> Path:
     :type dir: Path
     :param name: the Original File name
     :type name: str
+    :return: The Unique Path for that dir, for example `Videos/Unique Video (2).mp4`
+    :rtype: Path
     """
     base = dir / name
     if not base.exists():

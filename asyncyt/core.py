@@ -15,7 +15,7 @@ import logging
 import warnings
 import tempfile
 
-from .enums import ProgressStatus, VideoFormat
+from .enums import ProgressStatus, VideoFormat, VideoCodec, AudioCodec
 from .exceptions import *
 from .basemodels import *
 from .utils import (
@@ -183,7 +183,7 @@ class AsyncYT(AsyncFFmpeg):
         temp_dir: Union["tempfile.TemporaryDirectory", Path],
         output_dir: Path,
         config: "DownloadConfig",
-    ) -> None:
+    ) -> List[Path]:
         """
         Move processed files from the temporary directory to the final output directory.
 
@@ -193,8 +193,11 @@ class AsyncYT(AsyncFFmpeg):
         :type output_dir: Path
         :param config: The download configuration (used for overwrite settings).
         :type config: DownloadConfig
+        :return: List of paths to moved files.
+        :rtype: List[Path]
         """
 
+        moved_files = []
         if isinstance(temp_dir, tempfile.TemporaryDirectory):
             temp_dir = Path(temp_dir.name)
         try:
@@ -202,6 +205,9 @@ class AsyncYT(AsyncFFmpeg):
             
             # Iterate through all files inside the temporary directory
             for item in temp_dir.iterdir():
+                if item.is_dir():
+                    continue
+                    
                 dest_path = output_dir / item.name
 
                 # Handle name conflicts
@@ -217,11 +223,14 @@ class AsyncYT(AsyncFFmpeg):
                 try:
                     await asyncio.to_thread(shutil.move, str(item), str(destination))
                     logger.debug(f"Moved {item} → {destination}")
+                    moved_files.append(destination)
                 except Exception as e:
                     logger.error(f"Failed to move {item} to {destination}: {e}")
+                    raise
 
         except Exception as e:
             logger.exception(f"Unexpected error during finalize: {e}")
+            raise
         finally:
             # Always clean up the temp directory, even if moves failed
             try:
@@ -230,9 +239,11 @@ class AsyncYT(AsyncFFmpeg):
                         await asyncio.to_thread(shutil.rmtree, temp_dir)
                 else:
                     await asyncio.to_thread(temp_dir.cleanup)
-                logger.debug(f"Temporary directory {temp_dir.name} cleaned up.")
+                logger.debug(f"Temporary directory cleaned up.")
             except Exception as e:
-                logger.warning(f"Failed to clean up temp dir {temp_dir.name}: {e}")
+                logger.warning(f"Failed to clean up temp dir: {e}")
+        
+        return moved_files
 
     @overload
     async def download(
@@ -281,7 +292,7 @@ class AsyncYT(AsyncFFmpeg):
             raise DownloadAlreadyExistsError(id)
 
         # Ensure output directory exists
-        output_dir = Path(config.output_path)
+        output_dir = Path(config.output_path).resolve().absolute()
         output_dir.mkdir(parents=True, exist_ok=True)
         temp_dir = tempfile.TemporaryDirectory(delete=False)
         temp_path = Path(temp_dir.name)
@@ -354,8 +365,32 @@ class AsyncYT(AsyncFFmpeg):
             is_video = ext in (fmt.value for fmt in VideoFormat)
             if not config.extract_audio:
                 ffmpeg_config.video_format = config.video_format
-            elif config.extract_audio and is_video:
-                ffmpeg_config.extract_audio = True
+                
+                if config.video_format == VideoFormat.MP4:
+                    try:
+                        media_info = await self.get_file_info(output_file)
+                        has_av1 = any(
+                            stream.codec_name == "av1" 
+                            for stream in media_info.streams 
+                            if stream.codec_type == "video"
+                        )
+                        has_opus = any(
+                            stream.codec_name == "opus"
+                            for stream in media_info.streams
+                            if stream.codec_type == "audio"
+                        )
+                        
+                        if has_av1:
+                            ffmpeg_config.video_codec = VideoCodec.H264
+                        if has_opus:
+                            ffmpeg_config.audio_codec = AudioCodec.AAC
+                    except Exception:
+                        ffmpeg_config.video_codec = VideoCodec.H264
+                        ffmpeg_config.audio_codec = AudioCodec.AAC
+                        
+            elif config.extract_audio:
+                if is_video:
+                    ffmpeg_config.extract_audio = True
                 ffmpeg_config.audio_codec = ffmpeg_config.get_audio_codec(config.audio_format)
 
             result = await self.process(
@@ -364,11 +399,19 @@ class AsyncYT(AsyncFFmpeg):
                 progress_callback,
                 id=id,
                 progress=progress,
+                embed_thumbnail=config.embed_thumbnail,
+                keep_thumbnail=config.write_thumbnail,
             )
             config.output_path = str(output_dir.absolute().resolve())
             if finalize:
-                await self.finalize_download(temp_dir, output_dir, config)
-                return output_dir / result
+                moved_files = await self.finalize_download(temp_dir, output_dir, config)
+                
+                if moved_files:
+                    logger.info(f"Download completed: {moved_files[0]}")
+                    return moved_files[0]
+                else:
+                    logger.error(f"No files were moved to output directory {output_dir}")
+                    raise FileNotFoundError(f"No output file found after processing")
 
             return Path(temp_path) / result
 

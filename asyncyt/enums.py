@@ -144,4 +144,5 @@ class ProgressStatus(StrEnum):
     DOWNLOADED = "downloaded"
     ENCODING = "encoding"
     COMPLETED = "completed"
+    UPDATING = "updating"
     EXTRACTING = "extracting"
