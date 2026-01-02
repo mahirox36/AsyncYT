@@ -202,7 +202,7 @@ class BinaryManager:
             
             # os = "win64" if system == "windows" else "linux64"
             # FORMAT = ""
-            url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-n7.1-latest-win64-gpl-7.1.zip"
+            url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n7.1-latest-win64-gpl-7.1.zip"
             temp_file = self.bin_dir / "ffmpeg.zip"
 
             async for progress in self._download_file(url, temp_file):
