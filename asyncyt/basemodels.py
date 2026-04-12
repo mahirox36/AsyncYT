@@ -1,37 +1,33 @@
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, Iterator, List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-
-from .utils import (
-    is_compatible,
-    is_audio_compatible,
-    suggest_audio_compatible_formats,
-    suggest_compatible_formats,
-)
-from .exceptions import CodecCompatibilityError, InvalidFFmpegConfigError
 from .enums import *
+from .encoding import EncodingConfig
 
 __all__ = [
     "VideoInfo",
     "DownloadConfig",
     "DownloadProgress",
     "DownloadRequest",
-    "SearchRequest",
-    "PlaylistRequest",
     "DownloadResponse",
+    "SearchRequest",
     "SearchResponse",
+    "PlaylistVideoInfo",
+    "PlaylistInfo",
+    "PlaylistConfig",
+    "PlaylistRequest",
+    "PlaylistDownloadProgress",
+    "PlaylistItemResult",
     "PlaylistResponse",
-    "HealthResponse",
     "DownloadFileProgress",
     "SetupProgress",
+    "HealthResponse",
     "InputFile",
-    "FFmpegConfig",
-    "FFmpegProgress",
     "StreamInfo",
     "MediaInfo",
 ]
+
 
 
 class VideoInfo(BaseModel):
@@ -39,25 +35,15 @@ class VideoInfo(BaseModel):
     Video information extracted from URL.
 
     :param url: Video URL.
-    :type url: str
     :param title: Video title.
-    :type title: str
     :param duration: Duration in seconds.
-    :type duration: float
     :param uploader: Uploader name.
-    :type uploader: str
     :param view_count: Number of views.
-    :type view_count: int
     :param like_count: Number of likes.
-    :type like_count: Optional[int]
     :param description: Video description.
-    :type description: str
     :param thumbnail: Thumbnail URL.
-    :type thumbnail: str
-    :param upload_date: Upload date.
-    :type upload_date: str
+    :param upload_date: Upload date string (YYYYMMDD).
     :param formats: List of available formats.
-    :type formats: List[Dict[str, Any]]
     """
 
     url: str
@@ -79,20 +65,12 @@ class VideoInfo(BaseModel):
 
     @classmethod
     def from_dict(cls, data: dict) -> "VideoInfo":
-        """
-        Create a VideoInfo instance from a dictionary.
-
-        :param data: Dictionary with video info.
-        :type data: dict
-        :return: VideoInfo instance.
-        :rtype: VideoInfo
-        """
         return cls(
-            url=data.get("webpage_url", ""),
+            url=data.get("webpage_url", data.get("url", "")),
             title=data.get("title", ""),
-            duration=data.get("duration", 0),
-            uploader=data.get("uploader", ""),
-            view_count=data.get("view_count", 0),
+            duration=data.get("duration", 0) or 0,
+            uploader=data.get("uploader", data.get("channel", "")),
+            view_count=data.get("view_count", 0) or 0,
             like_count=data.get("like_count"),
             description=data.get("description", ""),
             thumbnail=data.get("thumbnail", ""),
@@ -107,8 +85,8 @@ class VideoInfo(BaseModel):
                 "title": "Rick Astley - Never Gonna Give You Up",
                 "duration": 212,
                 "uploader": "RickAstleyVEVO",
-                "view_count": 1000000000,
-                "like_count": 10000000,
+                "view_count": 1_000_000_000,
+                "like_count": 10_000_000,
                 "description": "Official video...",
                 "thumbnail": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
                 "upload_date": "20091025",
@@ -116,838 +94,320 @@ class VideoInfo(BaseModel):
         }
 
 
-class InputFile(BaseModel):
+
+class PlaylistVideoInfo(BaseModel):
     """
-    Single input file configuration.
+    Lightweight info for a single video inside a playlist.
 
-    :param path: Path to input file.
-    :type path: str
-    :param type: Type of input file.
-    :type type: InputType
-    :param options: Input-specific options.
-    :type options: List[str]
-    :param stream_index: Specific stream index to use.
-    :type stream_index: Optional[int]
-    """
+    This is populated during ``get_playlist_info`` from yt-dlp's
+    ``--flat-playlist`` output, so heavy fields like ``formats`` are absent.
+    Use ``get_video_info(entry.url)`` if you need full format data.
 
-    path: str = Field(description="Path to input file")
-    type: InputType = Field(description="Type of input file")
-    options: List[str] = Field(
-        default_factory=list, description="Input-specific options"
-    )
-    stream_index: Optional[int] = Field(
-        default=None, description="Specific stream index to use"
-    )
-
-    @field_validator("path")
-    def validate_path_exists(cls, v):
-        if not Path(v).exists():
-            raise ValueError(f"Input file does not exist: {v}")
-        return v
-
-
-class FFmpegConfig(BaseModel):
-    """
-    Configuration for FFmpeg operations.
-
-    See attributes for all configuration options.
+    :param id: Video ID (e.g. YouTube video ID).
+    :param url: Full video URL.
+    :param title: Video title.
+    :param duration: Duration in seconds (may be 0 if unavailable flat).
+    :param uploader: Channel / uploader name.
+    :param thumbnail: Best thumbnail URL available from flat data.
+    :param thumbnails: All thumbnail variants returned by yt-dlp.
+    :param upload_date: Upload date string (YYYYMMDD).
+    :param view_count: View count (may be 0 if unavailable flat).
+    :param playlist_index: 1-based position inside the playlist.
     """
 
-    ffmpeg_path: str = Field(default="ffmpeg", description="Path of FFmpeg")
-    # Input/Output
-    inputs: List[InputFile] = Field(
-        default_factory=list, description="List of input files"
-    )
-    output_path: str = Field(default="./output", description="Output directory path")
-    output_filename: Optional[str] = Field(
-        default=None, description="Output filename (without extension)"
-    )
+    id: str = ""
+    url: str
+    title: str | None = None
+    duration: float = Field(0.0, ge=0)
+    uploader: Optional[str] = None
+    thumbnail: str | None = None
+    thumbnails: List[Dict[str, Any]] = Field(default_factory=list)
+    upload_date: str = ""
+    view_count: int = Field(0, ge=0)
+    playlist_index: Optional[int] = None
 
-    # Video settings
-    video_codec: VideoCodec = Field(default=VideoCodec.H264, description="Video codec")
-    video_format: Optional[VideoFormat] = Field(
-        default=None, description="Output container format"
-    )
-    video_bitrate: Optional[str] = Field(
-        default=None, description="Video bitrate (e.g., '2M', '1000k')"
-    )
-    crf: Optional[int] = Field(
+    @classmethod
+    def from_flat_dict(
+        cls, data: dict, index: Optional[int] = None
+    ) -> "PlaylistVideoInfo":
+        """
+        Build a PlaylistVideoInfo from a yt-dlp ``--flat-playlist`` entry.
+
+        :param data: Raw yt-dlp entry dict.
+        :param index: 1-based position in the playlist (optional).
+        """
+        # Prefer the best thumbnail
+        thumbnails: List[Dict[str, Any]] = data.get("thumbnails", [])
+        thumbnail_url: str = data.get("thumbnail", "")
+        if not thumbnail_url and thumbnails:
+            # yt-dlp sorts thumbnails by quality; last is usually best
+            thumbnail_url = thumbnails[-1].get("url", "")
+
+        raw_url: str = (
+            data.get("webpage_url")
+            or data.get("url")
+            or (
+                f"https://www.youtube.com/watch?v={data['id']}"
+                if data.get("id")
+                else ""
+            )
+        )
+
+        return cls(
+            id=data.get("id", ""),
+            url=raw_url,
+            title=data.get("title", ""),
+            duration=float(data.get("duration", 0) or 0),
+            uploader=data.get("uploader")
+            or data.get("channel")
+            or data.get("uploader_id", ""),
+            thumbnail=thumbnail_url,
+            thumbnails=thumbnails,
+            upload_date=data.get("upload_date", ""),
+            view_count=int(data.get("view_count", 0) or 0),
+            playlist_index=index,
+        )
+
+
+class PlaylistInfo(BaseModel):
+    """
+    Full metadata for a playlist, including all video entries.
+
+    :param id: Playlist ID.
+    :param url: Playlist URL.
+    :param title: Playlist title.
+    :param description: Playlist description.
+    :param uploader: Channel / uploader name.
+    :param thumbnail: Playlist thumbnail URL.
+    :param entry_count: Total number of entries in the playlist (may exceed ``entries`` if
+                        ``max_videos`` was applied).
+    :param entries: List of :class:`PlaylistVideoInfo` objects.
+    """
+
+    id: str = ""
+    url: str = ""
+    title: str = "Unknown Playlist"
+    description: Optional[str] = None
+    uploader: Optional[str] = None
+    thumbnail: Optional[str] = None
+    entry_count: int = 0
+    entries: List[PlaylistVideoInfo] = Field(default_factory=list)
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    def __getitem__(self, item: int) -> PlaylistVideoInfo:
+        return self.entries[item]
+
+    def __iter__(self) -> Iterator[PlaylistVideoInfo]:  # type: ignore[override]
+        return iter(self.entries)
+
+    @classmethod
+    def from_ytdlp(
+        cls,
+        raw_entries: List[dict],
+        playlist_url: str,
+        max_videos: Optional[int] = None,
+    ) -> "PlaylistInfo":
+        """
+        Build a PlaylistInfo from a list of raw yt-dlp flat-playlist dicts.
+
+        :param raw_entries: Raw list of entry dicts from yt-dlp.
+        :param playlist_url: The original playlist URL.
+        :param max_videos: Limit to this many entries (None = all).
+        """
+        total = len(raw_entries)
+        if max_videos:
+            raw_entries = raw_entries[:max_videos]
+
+        entries = [
+            PlaylistVideoInfo.from_flat_dict(e, index=i + 1)
+            for i, e in enumerate(raw_entries)
+        ]
+
+        # Try to pull playlist-level metadata from the first entry
+        first = raw_entries[0] if raw_entries else {}
+        pl_title = (
+            first.get("playlist_title") or first.get("playlist") or "Unknown Playlist"
+        )
+        pl_id = first.get("playlist_id", "")
+        pl_uploader = (
+            first.get("playlist_uploader") or first.get("playlist_channel") or ""
+        )
+        # Use the best thumbnail from the first video as a proxy
+        pl_thumbnail = entries[0].thumbnail
+
+        return cls(
+            id=pl_id,
+            url=playlist_url,
+            title=pl_title,
+            uploader=pl_uploader,
+            thumbnail=pl_thumbnail,
+            entry_count=total,
+            entries=entries,
+        )
+
+
+class PlaylistConfig(BaseModel):
+    """
+    Configuration specific to playlist downloads.
+
+    Extends the concept of :class:`DownloadConfig` at the playlist level,
+    letting you control concurrency, item ranges, and failure behaviour without
+    duplicating all per-video settings (those live inside ``item_config``).
+
+    :param item_config: Per-video :class:`DownloadConfig` applied to each item.
+    :param max_videos: Maximum number of videos to download (0 = all).
+    :param start_index: 1-based playlist index to start from.
+    :param end_index: 1-based playlist index to stop at (inclusive). ``None`` = end.
+    :param concurrency: How many videos to download simultaneously (1 = sequential).
+    :param skip_on_error: If True, log failed items and continue; otherwise abort.
+    :param reverse: Download playlist in reverse order.
+    :param write_playlist_metadata: Write a ``playlist.json`` file with
+                                     :class:`PlaylistInfo` metadata alongside the videos.
+    """
+
+    item_config: Optional["DownloadConfig"] = Field(
         default=None,
+        description="Per-video DownloadConfig applied to each playlist item",
+    )
+    max_videos: int = Field(
+        default=0,
         ge=0,
-        le=51,
-        description="Constant Rate Factor (0-51, lower = better quality)",
+        description="Maximum videos to download (0 = unlimited)",
     )
-    preset: Preset = Field(default=Preset.MEDIUM, description="Encoding preset")
-
-    # Audio settings
-    audio_codec: AudioCodec = Field(default=AudioCodec.COPY, description="Audio codec")
-    audio_bitrate: Optional[str] = Field(
-        default=None, description="Audio bitrate (e.g., '128k', '320k')"
+    start_index: int = Field(
+        default=1,
+        ge=1,
+        description="1-based playlist index to start downloading from",
     )
-    audio_sample_rate: Optional[int] = Field(
-        default=None, description="Audio sample rate in Hz"
-    )
-    audio_channels: Optional[int] = Field(
-        default=None, ge=1, le=8, description="Number of audio channels"
-    )
-
-    # Resolution and scaling
-    width: Optional[int] = Field(
-        default=None, ge=1, description="Output width in pixels"
-    )
-    height: Optional[int] = Field(
-        default=None, ge=1, description="Output height in pixels"
-    )
-    scale_filter: Optional[str] = Field(
-        default=None, description="Custom scale filter (e.g., 'scale=1920:1080')"
-    )
-
-    # Frame rate
-    fps: Optional[float] = Field(default=None, gt=0, description="Output frame rate")
-
-    # Processing options
-    extract_audio: bool = Field(default=False, description="Extract audio only")
-    remove_video: bool = Field(default=False, description="Remove video stream")
-    remove_audio: bool = Field(default=False, description="Remove audio stream")
-
-    # Time ranges
-    start_time: Optional[str] = Field(
-        default=None, description="Start time (e.g., '00:01:30' or '90')"
-    )
-    duration: Optional[str] = Field(
-        default=None, description="Duration (e.g., '00:02:00' or '120')"
-    )
-    end_time: Optional[str] = Field(
-        default=None, description="End time (e.g., '00:03:30' or '210')"
-    )
-
-    # Filters
-    video_filters: List[str] = Field(
-        default_factory=list, description="Video filters to apply"
-    )
-    audio_filters: List[str] = Field(
-        default_factory=list, description="Audio filters to apply"
-    )
-
-    # Hardware acceleration
-    hardware_accel: Optional[str] = Field(
+    end_index: Optional[int] = Field(
         default=None,
-        description="Hardware acceleration (e.g., 'cuda', 'vaapi', 'videotoolbox')",
+        ge=1,
+        description="1-based playlist index to stop at (inclusive)",
     )
-
-    # Advanced options
-    two_pass: bool = Field(default=False, description="Use two-pass encoding")
-    overwrite: bool = Field(
-        default=False, description="Overwrite output file if exists"
+    concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="Number of simultaneous video downloads (1 = sequential)",
     )
-    threads: Optional[int] = Field(
-        default=None, ge=1, description="Number of threads to use"
-    )
-    delete_source: bool = Field(
-        default=True, description="Whether to delete the source file after processing"
-    )
-
-    # Metadata
-    preserve_metadata: bool = Field(default=True, description="Preserve input metadata")
-    copy_subs: bool = Field(default=False, description="Copy subs into the output")
-    copy_attachments: bool = Field(
-        default=False,
-        description="Copy the attachments into the output (attachments like thumbnail, fonts, etc)",
-    )
-    preserve_metadata: bool = Field(default=True, description="Preserve input metadata")
-    custom_metadata: Dict[str, str] = Field(
-        default_factory=dict, description="Custom metadata to add"
-    )
-
-    # Logging and debugging
-    log_level: str = Field(default="info", description="FFmpeg log level")
-    verbose: bool = Field(default=False, description="Enable verbose output")
-    no_codec_compatibility_error: bool = Field(
+    skip_on_error: bool = Field(
         default=True,
-        description="Auto-pick a compatible format if the chosen codec isn't supported.",
+        description="Continue playlist if a single video fails",
     )
-
-    # Custom options
-    custom_input_options: List[str] = Field(
-        default_factory=list, description="Custom input options"
+    reverse: bool = Field(
+        default=False,
+        description="Download in reverse playlist order",
     )
-    custom_output_options: List[str] = Field(
-        default_factory=list, description="Custom output options"
+    write_playlist_metadata: bool = Field(
+        default=False,
+        description="Write a playlist.json metadata file",
     )
-    _original_audio_type: Optional[str] = None
-
-    def add_input(
-        self,
-        path: str,
-        input_type: InputType,
-        options: Optional[List[str]] = None,
-        stream_index: Optional[int] = None,
-    ):
-        """
-        Add an input file to the configuration.
-
-        :param path: Path to input file.
-        :type path: str
-        :param input_type: Type of input file.
-        :type input_type: InputType
-        :param options: Input-specific options.
-        :type options: Optional[List[str]]
-        :param stream_index: Specific stream index to use.
-        :type stream_index: Optional[int]
-        """
-        input_file = InputFile(
-            path=path, type=input_type, options=options or [], stream_index=stream_index
-        )
-        self.inputs.append(input_file)
-
-    def add_media_input(self, path: str, options: Optional[List[str]] = None):
-        """
-        Convenience method to add Video/Audio input.
-
-        :param path: Path to media file.
-        :type path: str
-        :param options: Input-specific options.
-        :type options: Optional[List[str]]
-        """
-        ext = os.path.splitext(os.path.basename(path))[1][1:]
-        if ext in [f.value for f in VideoFormat]:
-            self.add_input(path, InputType.VIDEO, options)
-            if not self.video_format:
-                self.video_format = VideoFormat(
-                    os.path.splitext(os.path.basename(path))[1][1:]
-                )
-        else:
-            self.add_input(path, InputType.AUDIO, options)
-            self._original_audio_type = os.path.splitext(os.path.basename(path))[1][1:]
-
-    def add_subtitle_input(self, path: str, options: Optional[List[str]] = None):
-        """
-        Convenience method to add subtitle input.
-
-        :param path: Path to subtitle file.
-        :type path: str
-        :param options: Input-specific options.
-        :type options: Optional[List[str]]
-        """
-        self.add_input(path, InputType.SUBTITLE, options)
-
-    def add_thumbnail_input(self, path: str, options: Optional[List[str]] = None):
-        """
-        Convenience method to add thumbnail input.
-
-        :param path: Path to thumbnail file.
-        :type path: str
-        :param options: Input-specific options.
-        :type options: Optional[List[str]]
-        """
-        self.add_input(path, InputType.THUMBNAIL, options)
-
-    @property
-    def is_empty(self):
-        """
-        Check if the config is empty (no video/audio settings).
-
-        :return: True if empty, False otherwise.
-        :rtype: bool
-        :raises InvalidFFmpegConfigError: If neither video_format nor audio_codec is set.
-        """
-        if not self.video_format and not self.audio_codec:
-            raise InvalidFFmpegConfigError(
-                "At least one of video_format or audio_codec must be set."
-            )
-        return not any(
-            [
-                None if self.video_codec == VideoCodec.COPY else True,
-                self.video_format,
-                self.video_bitrate,
-                self.crf,
-                None if self.preset == Preset.MEDIUM else True,
-                None if self.audio_codec == AudioCodec.COPY else True,
-                self.audio_bitrate,
-                self.audio_sample_rate,
-                self.audio_channels,
-                self.width,
-                self.height,
-                self.scale_filter,
-                self.fps,
-                self.extract_audio,
-                self.remove_video,
-                self.remove_audio,
-                self.start_time,
-                self.duration,
-                self.end_time,
-                self.video_filters,
-                self.audio_filters,
-                self.hardware_accel,
-                self.custom_input_options,
-                self.custom_output_options,
-            ]
-        )
-
-    def build_command(self) -> List[str]:
-        """
-        Build the FFmpeg command based on configuration with dynamic format/codec handling.
-
-        :return: List of FFmpeg command arguments.
-        :rtype: List[str]
-        """
-        cmd = [self.ffmpeg_path]
-
-        # Add global options
-        if self.hardware_accel:
-            cmd.extend(["-hwaccel", self.hardware_accel])
-        if self.threads:
-            cmd.extend(["-threads", str(self.threads)])
-        cmd.extend(["-loglevel", self.log_level])
-        if self.overwrite:
-            cmd.append("-y")
-
-
-        input_sources = list(reversed(self.inputs))
-
-
-        thumbnail_inputs = [
-            inp for inp in self.inputs if inp.type == InputType.THUMBNAIL
-        ]
-        has_thumbnail = len(thumbnail_inputs) > 0
-        thumb_input_idx = None
-        input_count = 0
-
-        for idx, inp in enumerate(input_sources):
-            if (
-                inp.type == InputType.THUMBNAIL
-                and self.video_format == VideoFormat.MKV
-                and has_thumbnail
-            ):
-                cmd.extend(
-                    [
-                        "-attach",
-                        inp.path,
-                        "-metadata:s:t",
-                        "mimetype=image/jpeg",
-                    ]
-                )
-                continue
-
-            if inp.type == InputType.THUMBNAIL and has_thumbnail:
-                cmd.extend(inp.options)
-                cmd.extend(["-i", inp.path])
-                thumb_input_idx = input_count
-                input_count += 1
-                continue
-
-            cmd.extend(inp.options)
-            cmd.extend(["-i", inp.path])
-            input_count += 1
-
-        if self.start_time:
-            cmd.extend(["-ss", self.start_time])
-        if self.duration:
-            cmd.extend(["-t", self.duration])
-        elif self.end_time:
-            cmd.extend(["-to", self.end_time])
-
-
-        is_audio_only = self.extract_audio or self.remove_video
-        has_video = not (is_audio_only or self.remove_video)
-        has_audio = not self.remove_audio
-
-        if self.video_format:
-            fmt = VideoFormat(self.video_format)
-            codec_incompatible = False
-
-            if has_video and self.video_codec != VideoCodec.COPY:
-                codec_incompatible = not is_compatible(fmt, self.video_codec)
-
-            if has_audio and self.audio_codec != AudioCodec.COPY:
-                codec_incompatible = codec_incompatible or not is_audio_compatible(
-                    fmt, self.audio_codec
-                )
-
-            if codec_incompatible:
-                if self.no_codec_compatibility_error:
-                    possible_formats = []
-                    if has_video and self.video_codec != VideoCodec.COPY:
-                        possible_formats = suggest_compatible_formats(self.video_codec)
-                    if has_audio and self.audio_codec != AudioCodec.COPY:
-                        audio_formats = suggest_audio_compatible_formats(
-                            self.audio_codec
-                        )
-                        if possible_formats:
-                            possible_formats = list(
-                                set(possible_formats) & set(audio_formats)
-                            )
-                        else:
-                            possible_formats = audio_formats
-
-                    if possible_formats:
-                        self.video_format = possible_formats[0]
-                    else:
-                        self.video_format = VideoFormat.MKV
-                else:
-                    raise CodecCompatibilityError(self.video_codec, fmt)
-
-        if has_video:
-            has_multi_video = (
-                has_thumbnail
-                and thumb_input_idx is not None
-                and self.video_format != VideoFormat.MKV
-            )
-
-            if self.needs_video_reencode():
-                codec_spec = "-c:v:0" if has_multi_video else "-c:v"
-                cmd.extend(
-                    [
-                        codec_spec,
-                        self.video_codec,
-                        "-crf",
-                        str(self.crf or 18),
-                        "-preset",
-                        Preset(self.preset).value,
-                        "-pix_fmt",
-                        "yuv420p",
-                    ]
-                )
-                if self.video_bitrate:
-                    cmd.extend(["-b:v", self.video_bitrate])
-            else:
-                codec_spec = "-c:v:0" if has_multi_video else "-c:v"
-                cmd.extend([codec_spec, "copy"])
-
-        # Audio encoding settings
-        if has_audio:
-            if self.audio_codec == AudioCodec.COPY:
-                # Copy audio codec as-is
-                cmd.extend(["-c:a", "copy"])
-            else:
-                cmd.extend(["-c:a", AudioCodec(self.audio_codec).value])
-
-                if self.audio_bitrate:
-                    cmd.extend(["-b:a", self.audio_bitrate])
-                elif self.audio_codec == AudioCodec.AAC:
-                    cmd.extend(["-b:a", "192k"])
-                elif self.audio_codec == AudioCodec.MP3:
-                    cmd.extend(["-b:a", "192k"])
-                elif (
-                    self.audio_codec == AudioCodec.OPUS
-                    or self.audio_codec == AudioCodec.VORBIS
-                ):
-                    cmd.extend(["-q:a", "9"])
-                elif self.audio_codec == AudioCodec.FLAC:
-                    pass
-
-                if self.audio_sample_rate:
-                    cmd.extend(["-ar", str(self.audio_sample_rate)])
-                if self.audio_channels:
-                    cmd.extend(["-ac", str(self.audio_channels)])
-
-        # Video filters
-        video_filters = list(self.video_filters)
-        if has_video:
-            if self.width and self.height:
-                video_filters.append(f"scale={self.width}:{self.height}")
-            elif self.scale_filter:
-                video_filters.append(self.scale_filter)
-        if video_filters:
-            cmd.extend(["-vf", ",".join(video_filters)])
-
-        # Audio filters
-        if has_audio and self.audio_filters:
-            cmd.extend(["-af", ",".join(self.audio_filters)])
-
-        # Frame rate
-        if has_video and self.fps:
-            cmd.extend(["-r", str(self.fps)])
-
-
-        # Stream handling
-        if self.remove_video or self.extract_audio:
-            cmd.extend(["-vn"])
-        if self.remove_audio:
-            cmd.extend(["-an"])
-
-        # Metadata and stream mapping
-        if not self.preserve_metadata:
-            cmd.extend(["-map_metadata", "-1"])
-
-        # Stream mapping with intelligent handling
-        stream_mapping = []
-        for idx, inp in enumerate(input_sources):
-            if inp.type == InputType.THUMBNAIL:
-                continue
-
-            if inp.type == InputType.VIDEO and has_video:
-                stream_spec = (
-                    f"{idx}:{inp.stream_index}"
-                    if inp.stream_index is not None
-                    else f"{idx}:v:0"
-                )
-                stream_mapping.extend(["-map", stream_spec])
-                if has_audio:
-                    stream_mapping.extend(["-map", f"{idx}:a:0?"])
-
-            elif inp.type == InputType.AUDIO and has_audio:
-                stream_spec = (
-                    f"{idx}:{inp.stream_index}"
-                    if inp.stream_index is not None
-                    else f"{idx}:a:0"
-                )
-                stream_mapping.extend(["-map", stream_spec])
-
-            elif inp.type == InputType.SUBTITLE and self.copy_subs:
-                stream_spec = (
-                    f"{idx}:{inp.stream_index}"
-                    if inp.stream_index is not None
-                    else f"{idx}:s:0"
-                )
-                stream_mapping.extend(["-map", stream_spec])
-                if self.video_format == VideoFormat.MKV:
-                    stream_mapping.extend(["-c:s", "copy"])
-                else:
-                    stream_mapping.extend(["-c:s", "mov_text"])
-        if has_thumbnail and thumb_input_idx is not None:
-            stream_mapping.extend(["-map", f"{thumb_input_idx}:v:0"])
-            if (
-                self.video_format == VideoFormat.MP4
-                or self.video_format == VideoFormat.MOV
-            ):
-                stream_mapping.extend(["-c:v:1", "mjpeg"])
-                stream_mapping.extend(["-disposition:v:1", "attached_pic"])
-            elif self.extract_audio or not any(
-                inp.type == InputType.VIDEO for inp in self.inputs
-            ):
-                fmt_val = (
-                    VideoFormat(self.video_format).value if self.video_format else None
-                )
-                if fmt_val == "mp3":
-                    stream_mapping.extend(["-c:v:1", "mjpeg"])
-                    stream_mapping.extend(["-id3v2_version", "3"])
-                    stream_mapping.extend(["-metadata:s:v", "title=Album cover"])
-                    stream_mapping.extend(["-metadata:s:v", "comment=Cover (front)"])
-                elif fmt_val == "m4a":
-                    stream_mapping.extend(["-c:v:1", "mjpeg"])
-                    stream_mapping.extend(["-disposition:v:1", "attached_pic"])
-                elif fmt_val == "flac" or fmt_val == "ogg":
-                    stream_mapping.extend(["-c:v:1", "mjpeg"])
-                    stream_mapping.extend(["-metadata:s:v", "title=Album cover"])
-
-        if stream_mapping:
-            cmd.extend(stream_mapping)
-
-        # Custom metadata
-        for key, value in self.custom_metadata.items():
-            cmd.extend(["-metadata", f"{key}={value}"])
-
-        # Two-pass encoding setup
-        if self.two_pass and self.video_codec != VideoCodec.COPY and has_video:
-            cmd.extend(["-pass", "1", "-f", "null"])
-
-        # Custom options
-        cmd.extend(self.custom_input_options)
-        cmd.extend(self.custom_output_options)
-
-        # Output file
-        output_file = Path(self.output_path) / self.get_output_filename()
-        cmd.extend(["-progress", "pipe:1"])
-        cmd.append(str(output_file))
-
-        return cmd
-
-    def build_two_pass_commands(self) -> tuple[List[str], List[str]]:
-        """
-        Build two separate commands for two-pass encoding.
-
-        :return: Tuple of (first_pass_command, second_pass_command).
-        :rtype: tuple[List[str], List[str]]
-        :raises ValueError: If two-pass encoding is not enabled.
-        """
-        if not self.two_pass:
-            raise ValueError("Two-pass encoding not enabled")
-
-        # First pass
-        first_pass = self.build_command()
-        # Replace output with null and add pass 1
-        for i, arg in enumerate(first_pass):
-            if arg == str(Path(self.output_path) / self.get_output_filename()):
-                first_pass[i] = "/dev/null" if Path("/dev/null").exists() else "NUL"
-                break
-
-        # Add pass 1 before output
-        output_idx = len(first_pass) - 1
-        first_pass.insert(output_idx, "-pass")
-        first_pass.insert(output_idx + 1, "1")
-        first_pass.insert(output_idx + 2, "-f")
-        first_pass.insert(output_idx + 3, "null")
-
-        # Second pass
-        second_pass = self.build_command()
-        output_idx = len(second_pass) - 1
-        second_pass.insert(output_idx, "-pass")
-        second_pass.insert(output_idx + 1, "2")
-
-        return first_pass, second_pass
-
-    def get_command_string(self) -> str:
-        """
-        Get the command as a formatted string.
-
-        :return: FFmpeg command as a string.
-        :rtype: str
-        """
-        cmd = self.build_command()
-        # Escape arguments with spaces
-        escaped_cmd = []
-        for arg in cmd:
-            if " " in arg and not (arg.startswith('"') and arg.endswith('"')):
-                escaped_cmd.append(f'"{arg}"')
-            else:
-                escaped_cmd.append(arg)
-        return " ".join(escaped_cmd)
-
-    def get_audio_format(self, original_ext: Optional[str] = None):
-        """
-        Get the audio format extension for the current codec.
-
-        :param original_ext: Original file extension.
-        :type original_ext: Optional[str]
-        :return: Audio format extension.
-        :rtype: str
-        """
-        original_ext = original_ext or self._original_audio_type or "mp3"
-        audio_extensions = {
-            AudioCodec.MP3: "mp3",
-            AudioCodec.AAC: "aac",
-            AudioCodec.FLAC: "flac",
-            AudioCodec.OPUS: "opus",
-            AudioCodec.VORBIS: "ogg",
-            AudioCodec.ALAC: "m4a",
-            AudioCodec.AC3: "ac3",
-            AudioCodec.EAC3: "eac3",
-            AudioCodec.DTS: "dts",
-            AudioCodec.PCM_S16LE: "wav",
-            AudioCodec.PCM_S24LE: "wav",
-            AudioCodec.AMR_NB: "amr",
-            AudioCodec.AMR_WB: "awb",
-            AudioCodec.WAVPACK: "wv",
-            AudioCodec.COPY: original_ext,
-        }
-        return audio_extensions.get(self.audio_codec, original_ext)
-
-    def get_audio_codec(self, format: Optional[AudioFormat] = None) -> AudioCodec:
-        """
-        Get the audio codec for a given format.
-
-        :param format: Audio format.
-        :type format: Optional[AudioFormat]
-        :return: AudioCodec enum value.
-        :rtype: AudioCodec
-        """
-        ext = format or AudioFormat.COPY
-
-        audio_extensions = {
-            "mp3": AudioCodec.MP3,
-            "aac": AudioCodec.AAC,
-            "flac": AudioCodec.FLAC,
-            "opus": AudioCodec.OPUS,
-            "ogg": AudioCodec.VORBIS,
-            "m4a": AudioCodec.ALAC,
-            "ac3": AudioCodec.AC3,
-            "eac3": AudioCodec.EAC3,
-            "dts": AudioCodec.DTS,
-            "wav": AudioCodec.PCM_S16LE,
-            "amr": AudioCodec.AMR_NB,
-            "awb": AudioCodec.AMR_WB,
-            "wv": AudioCodec.WAVPACK,
-        }
-
-        return audio_extensions.get(ext.value, AudioCodec.COPY)
-
-    def get_output_filename(self, original_ext: Optional[str] = None) -> str:
-        """
-        Generate output filename with proper extension.
-
-        :param original_ext: Original file extension.
-        :type original_ext: Optional[str]
-        :return: Output filename.
-        :rtype: str
-        :raises InvalidFFmpegConfigError: If neither video_format nor audio_codec is set.
-        """
-        base_name = self.output_filename or "output"
-        is_audio_mode = (self.extract_audio and not self.remove_video) or (
-            self.audio_codec and not self.video_format
-        )
-
-        if is_audio_mode:
-            extension = self.get_audio_format(original_ext)
-        else:
-            if not self.video_format:
-                raise InvalidFFmpegConfigError(
-                    "At least one of video_format or audio_codec must be set."
-                )
-            extension = VideoFormat(self.video_format).value
-
-        return f"{base_name}.{extension}"
-
-    def needs_video_reencode(self) -> bool:
-        return any(
-            [
-                self.width,
-                self.height,
-                self.scale_filter,
-                self.fps,
-                self.video_filters,
-                self.video_bitrate,
-                self.crf is not None,
-                self.video_codec
-                != VideoCodec.COPY,  # Check if we need to transcode video
-            ]
-        )
-
-    @field_validator("output_path")
-    def validate_output_path(cls, v):
-        # Create directory if it doesn't exist
-        Path(v).mkdir(parents=True, exist_ok=True)
-        return v
-
-    @field_validator("video_bitrate", "audio_bitrate")
-    def validate_bitrate(cls, v):
-        if v and not any(v.endswith(unit) for unit in ["k", "K", "m", "M", "g", "G"]):
-            if not v.isdigit():
-                raise ValueError("Bitrate must be a number or end with k/K/m/M/g/G")
-        return v
-
-    @field_validator("start_time", "duration", "end_time")
-    def validate_time_format(cls, v):
-        if v is None:
-            return v
-        # Accept either seconds (numeric) or HH:MM:SS format
-        if v.isdigit() or v.replace(".", "").isdigit():
-            return v
-        # Validate HH:MM:SS format
-        parts = v.split(":")
-        if len(parts) not in [2, 3]:
-            raise ValueError("Time format must be 'SS', 'MM:SS', or 'HH:MM:SS'")
-        try:
-            for part in parts:
-                float(part)
-        except ValueError:
-            raise ValueError("Invalid time format")
-        return v
-
-    @field_validator("log_level")
-    def validate_log_level(cls, v):
-        valid_levels = [
-            "quiet",
-            "panic",
-            "fatal",
-            "error",
-            "warning",
-            "info",
-            "verbose",
-            "debug",
-            "trace",
-        ]
-        if v not in valid_levels:
-            raise ValueError(f"Log level must be one of: {', '.join(valid_levels)}")
-        return v
 
     class Config:
-        use_enum_values = True
         json_schema_extra = {
             "example": {
-                "inputs": [
-                    {"path": "video.mp4", "type": "video"},
-                    {"path": "audio.mp3", "type": "audio"},
-                    {"path": "subtitles.srt", "type": "subtitle"},
-                    {"path": "thumbnail.jpg", "type": "thumbnail"},
-                ],
-                "output_path": "./output",
-                "video_codec": "libx264",
-                "video_format": "mp4",
-                "crf": 23,
-                "preset": "medium",
-                "audio_codec": "aac",
-                "audio_bitrate": "128k",
-                "width": 1920,
-                "height": 1080,
-                "overwrite": True,
-                "preserve_metadata": True,
+                "item_config": {
+                    "output_path": "./playlist_out",
+                    "quality": "1080p",
+                    "embed_metadata": True,
+                },
+                "max_videos": 20,
+                "concurrency": 2,
+                "skip_on_error": True,
             }
         }
 
 
-class FFmpegProgress(BaseModel):
+class PlaylistItemResult(BaseModel):
     """
-    FFmpeg progress information.
+    Result of downloading a single playlist item.
 
-    :param frame: Current frame.
-    :type frame: int
-    :param fps: Frames per second.
-    :type fps: float
-    :param bitrate: Bitrate string.
-    :type bitrate: str
-    :param total_size: Total size in bytes.
-    :type total_size: int
-    :param out_time_us: Output time in microseconds.
-    :type out_time_us: int
-    :param speed: Processing speed.
-    :type speed: str
-    :param progress: Progress status.
-    :type progress: str
+    :param index: 1-based playlist index.
+    :param video_info: Video metadata.
+    :param success: Whether the download succeeded.
+    :param filepath: Final output file path (None if failed).
+    :param error: Error message (None if succeeded).
     """
 
-    frame: int = 0
-    fps: float = 0.0
-    bitrate: str = "0kbits/s"
-    total_size: int = 0
-    out_time_us: int = 0
-    speed: str = "0x"
-    progress: str = "unknown"
+    index: int
+    video_info: PlaylistVideoInfo
+    success: bool
+    filepath: Optional[str] = None
+    error: Optional[str] = None
 
-    @field_validator("frame", "total_size", "out_time_us", mode="before")
-    @classmethod
-    def coerce_to_int(cls, v):
-        """Convert string values to integers"""
-        if isinstance(v, str):
-            try:
-                return int(v)
-            except ValueError:
-                return 0
-        return v
 
-    @field_validator("fps", mode="before")
-    @classmethod
-    def coerce_to_float(cls, v):
-        """Convert string values to floats"""
-        if isinstance(v, str):
-            try:
-                return float(v)
-            except ValueError:
-                return 0.0
-        return v
+class PlaylistDownloadProgress(BaseModel):
+    """
+    Real-time progress for a full playlist download operation.
 
-    @property
-    def out_time_seconds(self) -> float:
-        return self.out_time_us / 1_000_000.0
+    The ``current_video_progress`` field mirrors a normal
+    :class:`DownloadProgress` so callers can render per-video progress bars
+    alongside the overall playlist progress.
 
-    def __setitem__(self, key: str, value):
-        if key in self.model_fields:
-            setattr(self, key, value)
-        else:
-            raise KeyError(f"{key!r} is not a valid field of FFmpegProgress")
+    :param playlist_id: Unique ID for this playlist download session.
+    :param playlist_info: Full playlist metadata (available after fetch stage).
+    :param status: High-level playlist status.
+    :param total_videos: Total number of videos selected for download.
+    :param completed_videos: Number of successfully downloaded videos.
+    :param failed_videos: Number of failed videos so far.
+    :param current_index: 1-based index of the video currently being processed.
+    :param current_video: Metadata of the video currently being downloaded.
+    :param current_video_progress: Live :class:`DownloadProgress` for the active video.
+    :param overall_percentage: Overall playlist completion 0–100.
+    :param results: Completed item results accumulated so far.
+    """
 
-    def __getitem__(self, key: str):
-        if key in self.model_fields:
-            return getattr(self, key)
-        else:
-            raise KeyError(f"{key!r} is not a valid field of FFmpegProgress")
+    playlist_id: str
+    playlist_info: Optional[PlaylistInfo] = None
+    status: PlaylistStatus = PlaylistStatus.PENDING
+    total_videos: int = 0
+    completed_videos: int = 0
+    failed_videos: int = 0
+    current_index: int = 0
+    current_video: Optional[PlaylistVideoInfo] = None
+    current_video_progress: Optional["DownloadProgress"] = None
+    overall_percentage: Annotated[float, Field(ge=0.0, le=100.0)] = 0.0
+    results: List[PlaylistItemResult] = Field(default_factory=list)
+
+    def _recalculate_percentage(self) -> None:
+        if self.total_videos > 0:
+            done = self.completed_videos + self.failed_videos
+            self.overall_percentage = round((done / self.total_videos) * 100, 1)
+
+    class Config:
+        json_encoders = {float: lambda v: round(v, 2)}
+
+
+
 
 
 class DownloadConfig(BaseModel):
     """
-    Configuration for downloads.
+    Configuration for a single video download.
 
-    See attributes for all configuration options.
+    :param output_path: Directory where files are saved.
+    :param quality: Desired video quality.
+    :param audio_format: Audio container when extracting audio.
+    :param video_format: Video container format for remux/recode.
+    :param extract_audio: Download audio only.
+    :param embed_subs: Embed subtitles into the container.
+    :param write_subs: Write subtitle sidecar files.
+    :param subtitle_lang: BCP-47 subtitle language code.
+    :param write_thumbnail: Download thumbnail as a sidecar file.
+    :param embed_thumbnail: Embed thumbnail into the media file.
+    :param embed_metadata: Embed title/uploader/etc. metadata.
+    :param write_info_json: Write yt-dlp info JSON sidecar.
+    :param write_live_chat: Download live chat replay.
+    :param custom_filename: Custom yt-dlp output template.
+    :param cookies_file: Path to a Netscape cookies file.
+    :param proxy: Proxy URL.
+    :param rate_limit: Download rate limit (e.g. ``"1M"``, ``"500K"``).
+    :param retries: yt-dlp retry count.
+    :param fragment_retries: yt-dlp fragment retry count.
+    :param custom_options: Extra yt-dlp options passed as ``{key: value}``.
+    :param encoding: Fine-grained FFmpeg encoding settings.
     """
 
     output_path: str = Field(default="./downloads", description="Output directory path")
@@ -956,7 +416,7 @@ class DownloadConfig(BaseModel):
         default=None, description="Audio format for extraction"
     )
     video_format: Optional[VideoFormat] = Field(
-        default=None, description="Video format for output"
+        default=None, description="Video container format"
     )
     extract_audio: bool = Field(default=False, description="Extract audio only")
     embed_subs: bool = Field(default=False, description="Embed subtitles in video")
@@ -968,14 +428,14 @@ class DownloadConfig(BaseModel):
     write_info_json: bool = Field(default=False, description="Write info JSON file")
     write_live_chat: bool = Field(default=False, description="Download live chat")
     custom_filename: Optional[str] = Field(
-        default=None, description="Custom filename template"
+        default=None, description="Custom yt-dlp output template"
     )
     cookies_file: Optional[str] = Field(
         default=None, description="Path to cookies file"
     )
     proxy: Optional[str] = Field(default=None, description="Proxy URL")
     rate_limit: Optional[str] = Field(
-        default=None, description="Rate limit (e.g., '1M')"
+        default=None, description="Rate limit e.g. '1M' or '500K'"
     )
     retries: int = Field(default=3, ge=0, le=10, description="Number of retries")
     fragment_retries: int = Field(
@@ -984,26 +444,25 @@ class DownloadConfig(BaseModel):
     custom_options: Dict[str, Any] = Field(
         default_factory=dict, description="Custom yt-dlp options"
     )
-    ffmpeg_config: FFmpegConfig = Field(
-        default_factory=FFmpegConfig, description="Custom FFmpeg config"
+    encoding: Optional[EncodingConfig] = Field(
+        default=None,
+        description="Fine-grained video/audio encoding settings.",
     )
 
     @field_validator("output_path")
     def validate_output_path(cls, v):
-        # Create directory if it doesn't exist
         Path(v).mkdir(parents=True, exist_ok=True)
         return v
 
     @field_validator("rate_limit")
     def validate_rate_limit(cls, v):
-        if v and not any(v.endswith(unit) for unit in ["K", "M", "G", "k", "m", "g"]):
+        if v and not any(v.endswith(u) for u in ["K", "M", "G", "k", "m", "g"]):
             if not v.isdigit():
                 raise ValueError("Rate limit must be a number or end with K/M/G")
         return v
 
     @model_validator(mode="after")
-    def handle_extract_audio(self):
-        # If extract_audio is True, force embed_subs to False
+    def handle_extract_audio(self) -> "DownloadConfig":
         if self.extract_audio:
             self.embed_subs = False
         return self
@@ -1013,41 +472,44 @@ class DownloadConfig(BaseModel):
         json_schema_extra = {
             "example": {
                 "output_path": "./downloads",
-                "quality": "720p",
-                "extract_audio": True,
-                "audio_format": "mp3",
-                "write_thumbnail": True,
+                "quality": "1080p",
+                "video_format": "mp4",
+                "extract_audio": False,
+                "encoding": {
+                    "video": {"codec": "libx264", "crf": 20, "preset": "slow"},
+                    "audio": {"codec": "aac", "bitrate": "192k"},
+                },
                 "embed_thumbnail": True,
-                "subtitle_lang": "en",
-                "retries": 3,
+                "embed_metadata": True,
             }
         }
 
 
+
 class DownloadProgress(BaseModel):
     """
-    Progress information for downloads.
+    Real-time progress for a single video download.
 
-    :param id: Download ID.
-    :type id: str
-    :param url: Download URL.
-    :type url: str
-    :param title: Download title.
-    :type title: str
-    :param status: Progress status.
-    :type status: ProgressStatus
-    :param downloaded_bytes: Bytes downloaded.
-    :type downloaded_bytes: int
-    :param total_bytes: Total bytes to download.
-    :type total_bytes: int
-    :param speed: Download speed.
-    :type speed: str
-    :param eta: Estimated time remaining.
-    :type eta: int
-    :param percentage: Download percentage.
-    :type percentage: float
-    :param ffmpeg_progress: FFmpeg progress info.
-    :type ffmpeg_progress: FFmpegProgress
+    During FFmpeg encode/remux, the ``encoding_*`` fields are populated from
+    FFmpeg's ``-progress pipe:1`` output, which AsyncYT parses in real-time
+    by using ``--external-downloader ffmpeg`` with custom args.
+
+    :param id: Download ID (SHA-256 of URL + config).
+    :param url: Source URL.
+    :param title: Video title (filled once yt-dlp reports it).
+    :param status: Current phase.
+    :param downloaded_bytes: Bytes received so far.
+    :param total_bytes: Expected total bytes.
+    :param speed: Download speed string, e.g. ``"3.20MiB/s"``.
+    :param eta: Estimated remaining seconds during download.
+    :param percentage: Overall download progress 0–100.
+    :param encoding_percentage: FFmpeg encode progress 0–100.
+    :param encoding_fps: Frames per second during encode.
+    :param encoding_speed: Encoding speed multiplier, e.g. ``"2.50x"``.
+    :param encoding_frame: Current frame being encoded.
+    :param encoding_bitrate: Output bitrate during encode, e.g. ``"2048kbits/s"``.
+    :param encoding_size: Output size so far, e.g. ``"4096KiB"``.
+    :param encoding_time: Elapsed encode time as ``HH:MM:SS.mmm``.
     """
 
     id: str
@@ -1058,8 +520,16 @@ class DownloadProgress(BaseModel):
     total_bytes: int = 0
     speed: str = ""
     eta: int = 0
-    percentage: float = Field(0.0, ge=0.0, le=100.0)
-    ffmpeg_progress: FFmpegProgress = Field(default_factory=FFmpegProgress)
+    percentage: Annotated[float, Field(ge=0.0, le=100.0)] = 0.0
+
+    # Encoding / remux phase (populated from FFmpeg -progress pipe:1)
+    encoding_percentage: Annotated[float, Field(ge=0.0, le=100.0)] = 0.0
+    encoding_fps: Optional[float] = None
+    encoding_speed: Optional[str] = None
+    encoding_frame: Optional[int] = None
+    encoding_bitrate: Optional[str] = None
+    encoding_size: Optional[str] = None
+    encoding_time: Optional[str] = None
 
     @property
     def is_complete(self) -> bool:
@@ -1069,19 +539,9 @@ class DownloadProgress(BaseModel):
         json_encoders = {float: lambda v: round(v, 2)}
 
 
-class DownloadFileProgress(BaseModel):
-    """
-    Progress information for file downloads.
 
-    :param status: Progress status.
-    :type status: ProgressStatus
-    :param downloaded_bytes: Bytes downloaded.
-    :type downloaded_bytes: int
-    :param total_bytes: Total bytes to download.
-    :type total_bytes: int
-    :param percentage: Download percentage.
-    :type percentage: float
-    """
+class DownloadFileProgress(BaseModel):
+    """Progress for binary file downloads (yt-dlp / ffmpeg setup)."""
 
     status: ProgressStatus = ProgressStatus.DOWNLOADING
     downloaded_bytes: int = 0
@@ -1097,34 +557,19 @@ class DownloadFileProgress(BaseModel):
 
 
 class SetupProgress(BaseModel):
-    """
-    Progress information for file downloads.
-
-    :param file: File being downloaded.
-    :type file: str
-    :param download_file_progress: Progress of the file being downloaded.
-    :type download_file_progress: DownloadFileProgress
-    """
+    """Progress for binary setup (yt-dlp / ffmpeg download)."""
 
     file: str = "yt-dlp"
     download_file_progress: DownloadFileProgress = Field(
-        description="the progress of the file being downloaded"
+        description="Progress of the file being downloaded"
     )
 
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
 
 
-# API Response Models
 class DownloadRequest(BaseModel):
-    """
-    Request model for download endpoints.
-
-    :param url: Video URL to download.
-    :type url: str
-    :param config: Download configuration.
-    :type config: Optional[DownloadConfig]
-    """
+    """Request model for single-video download endpoints."""
 
     url: str = Field(..., description="Video URL to download")
     config: Optional[DownloadConfig] = Field(None, description="Download configuration")
@@ -1150,14 +595,7 @@ class DownloadRequest(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    """
-    Request model for search endpoints.
-
-    :param query: Search query string.
-    :type query: str
-    :param max_results: Maximum number of results.
-    :type max_results: int
-    """
+    """Request model for search endpoints."""
 
     query: str = Field(..., min_length=1, max_length=200, description="Search query")
     max_results: int = Field(10, ge=1, le=50, description="Maximum number of results")
@@ -1168,48 +606,42 @@ class SearchRequest(BaseModel):
 
 class PlaylistRequest(BaseModel):
     """
-    Request model for playlist downloads.
+    Request model for playlist download endpoints.
 
     :param url: Playlist URL.
-    :type url: str
-    :param config: Download configuration.
-    :type config: Optional[DownloadConfig]
-    :param max_videos: Maximum videos to download.
-    :type max_videos: int
+    :param playlist_config: Playlist-level configuration (concurrency, ranges, etc.).
+                            When omitted, sensible defaults are used.
     """
 
     url: str = Field(..., description="Playlist URL")
-    config: Optional[DownloadConfig] = Field(None, description="Download configuration")
-    max_videos: int = Field(
-        100, ge=1, le=1000, description="Maximum videos to download"
+    playlist_config: Optional[PlaylistConfig] = Field(
+        None,
+        description="Playlist download configuration",
     )
 
     @field_validator("url")
     def validate_playlist_url(cls, v):
-        if not v.strip():
+        v = v.strip()
+        if not v:
             raise ValueError("URL cannot be empty")
-        if "playlist" not in v.lower():
-            raise ValueError("URL must be a playlist URL")
-        return v.strip()
+        return v
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "url": "https://www.youtube.com/playlist?list=PLxxxxxxx",
+                "playlist_config": {
+                    "item_config": {"output_path": "./playlist", "quality": "720p"},
+                    "max_videos": 10,
+                    "concurrency": 2,
+                    "skip_on_error": True,
+                },
+            }
+        }
 
 
 class DownloadResponse(BaseModel):
-    """
-    Response model for download operations.
-
-    :param success: Whether the download was successful.
-    :type success: bool
-    :param message: Status message.
-    :type message: str
-    :param id: Download ID.
-    :type id: str
-    :param filename: Downloaded filename.
-    :type filename: Optional[str]
-    :param video_info: Video information.
-    :type video_info: Optional[VideoInfo]
-    :param error: Error message if any.
-    :type error: Optional[str]
-    """
+    """Response model for single-video download operations."""
 
     success: bool
     message: str
@@ -1234,20 +666,7 @@ class DownloadResponse(BaseModel):
 
 
 class SearchResponse(BaseModel):
-    """
-    Response model for search operations.
-
-    :param success: Whether the search was successful.
-    :type success: bool
-    :param message: Status message.
-    :type message: str
-    :param results: List of search results.
-    :type results: List[VideoInfo]
-    :param total_results: Total number of results.
-    :type total_results: int
-    :param error: Error message if any.
-    :type error: Optional[str]
-    """
+    """Response model for search operations."""
 
     success: bool
     message: str
@@ -1261,82 +680,43 @@ class SearchResponse(BaseModel):
     def __len__(self):
         return len(self.results)
 
-    def __iter__(self):
-        return iter(self.results)
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "Search completed successfully",
-                "total_results": 3,
-                "results": [
-                    {
-                        "title": "Python Tutorial for Beginners",
-                        "url": "https://www.youtube.com/watch?v=example1",
-                        "uploader": "Programming Channel",
-                        "duration": 1800,
-                    }
-                ],
-            }
-        }
-
 
 class PlaylistResponse(BaseModel):
     """
-    Response model for playlist operations.
+    Response model for playlist download operations.
 
-    :param success: Whether the playlist download was successful.
-    :type success: bool
-    :param message: Status message.
-    :type message: str
-    :param downloaded_files: List of downloaded files.
-    :type downloaded_files: List[str]
-    :param failed_downloads: List of failed downloads.
-    :type failed_downloads: List[str]
-    :param total_videos: Total number of videos in playlist.
-    :type total_videos: int
-    :param successful_downloads: Number of successful downloads.
-    :type successful_downloads: int
-    :param error: Error message if any.
-    :type error: Optional[str]
+    :param success: Overall success flag (True even when some items failed if
+                    ``skip_on_error`` was enabled and at least one succeeded).
+    :param message: Human-readable summary.
+    :param playlist_info: Full playlist metadata.
+    :param results: Per-item download results.
+    :param total_videos: Total number of playlist videos selected.
+    :param successful_downloads: Count of successfully downloaded videos.
+    :param failed_downloads: Count of failed videos.
+    :param downloaded_files: Convenience list of output file paths.
+    :param error: Top-level error message (only set when the entire operation failed).
     """
 
     success: bool
     message: str
-    downloaded_files: List[str] = Field(default_factory=list)
-    failed_downloads: List[str] = Field(default_factory=list)
+    playlist_info: Optional[PlaylistInfo] = None
+    results: List[PlaylistItemResult] = Field(default_factory=list)
     total_videos: int = 0
     successful_downloads: int = 0
+    failed_downloads: int = 0
+    downloaded_files: List[str] = Field(default_factory=list)
     error: Optional[str] = None
 
     def __getitem__(self, item):
-        return self.downloaded_files[item]
+        return self.results[item]
 
     def __len__(self):
-        return len(self.downloaded_files)
+        return len(self.results)
 
-    def __iter__(self):
-        return iter(self.downloaded_files)
 
 
 class HealthResponse(BaseModel):
-    """
-    Health check response.
-
-    :param status: Health status.
-    :type status: str
-    :param yt_dlp_available: Is yt-dlp available.
-    :type yt_dlp_available: bool
-    :param ffmpeg_available: Is ffmpeg available.
-    :type ffmpeg_available: bool
-    :param version: Version string.
-    :type version: str
-    :param binaries_path: Path to binaries.
-    :type binaries_path: Optional[str]
-    :param error: Error message if any.
-    :type error: Optional[str]
-    """
+    """Health check response."""
 
     status: str = "healthy"
     yt_dlp_available: bool = False
@@ -1346,29 +726,27 @@ class HealthResponse(BaseModel):
     error: Optional[str] = None
 
 
-class StreamInfo(BaseModel):
-    """
-    Stream information for media files.
+class InputFile(BaseModel):
+    """Single input file configuration."""
 
-    :param index: Stream index.
-    :type index: int
-    :param codec_type: Codec type (audio, video, etc).
-    :type codec_type: str
-    :param codec_name: Codec name.
-    :type codec_name: Optional[str]
-    :param width: Video width.
-    :type width: Optional[int]
-    :param height: Video height.
-    :type height: Optional[int]
-    :param bit_rate: Bitrate.
-    :type bit_rate: Optional[int]
-    :param sample_rate: Sample rate.
-    :type sample_rate: Optional[int]
-    :param channels: Number of channels.
-    :type channels: Optional[int]
-    :param language: Language tag.
-    :type language: Optional[str]
-    """
+    path: str = Field(description="Path to input file")
+    type: InputType = Field(description="Type of input file")
+    options: List[str] = Field(
+        default_factory=list, description="Input-specific options"
+    )
+    stream_index: Optional[int] = Field(
+        default=None, description="Specific stream index to use"
+    )
+
+    @field_validator("path")
+    def validate_path_exists(cls, v):
+        if not Path(v).exists():
+            raise ValueError(f"Input file does not exist: {v}")
+        return v
+
+
+class StreamInfo(BaseModel):
+    """Stream information for media files."""
 
     index: int
     codec_type: str
@@ -1382,24 +760,7 @@ class StreamInfo(BaseModel):
 
 
 class MediaInfo(BaseModel):
-    """
-    Media file information.
-
-    :param filename: Filename.
-    :type filename: str
-    :param format_name: Format name.
-    :type format_name: str
-    :param format_long_name: Long format name.
-    :type format_long_name: str
-    :param duration: Duration in seconds.
-    :type duration: float
-    :param size: File size in bytes.
-    :type size: int
-    :param bit_rate: Bitrate.
-    :type bit_rate: int
-    :param streams: List of stream info.
-    :type streams: List[StreamInfo]
-    """
+    """Media file information."""
 
     filename: str
     format_name: str

@@ -1,12 +1,7 @@
 __all__ = [
     "AsyncYTBase",
-    "FFmpegBase",
     "DownloaderBase",
     "YtDlpBase",
-    "InvalidFFmpegConfigError",
-    "FFmpegProcessingError",
-    "FFmpegOutputExistsError",
-    "CodecCompatibilityError",
     "DownloadGotCanceledError",
     "DownloadAlreadyExistsError",
     "DownloadNotFoundError",
@@ -14,24 +9,16 @@ __all__ = [
     "YtdlpSearchError",
     "YtdlpGetInfoError",
     "YtdlpPlaylistGetInfoError",
+    "PlaylistDownloadError",
+    "PlaylistCancelledError",
 ]
 
 
-from typing import List, Optional, Union
-
-from asyncyt.utils import suggest_audio_compatible_formats, suggest_compatible_formats
-
-from .enums import AudioFormat, VideoCodec, AudioCodec, VideoFormat
+from typing import List, Optional
 
 
 class AsyncYTBase(Exception):
     """Base exception for all AsyncYT-related errors."""
-
-    pass
-
-
-class FFmpegBase(AsyncYTBase):
-    """Base exception for all FFmpeg-related errors."""
 
     pass
 
@@ -46,66 +33,6 @@ class YtDlpBase(AsyncYTBase):
     """Base exception for all YTdlp-related errors."""
 
     pass
-
-
-class InvalidFFmpegConfigError(FFmpegBase):
-    """Raised when the provided FFmpeg configuration is invalid or unsupported."""
-
-    def __init__(self, message: str):
-        self.message = message
-        super().__init__(message)
-
-
-class FFmpegProcessingError(FFmpegBase, RuntimeError):
-    """Raised when FFmpeg fails to process the given input file."""
-
-    def __init__(
-        self,
-        input_file: str,
-        error_code: Optional[int],
-        cmd: List[str],
-        output: List[str] | str,
-    ):
-        message = f"FFmpeg processing failed for input: {input_file}"
-        self.file = input_file
-        self.error_code = error_code
-        self.cmd = " ".join(cmd)
-        self.output = "\n".join(output)
-        super().__init__(message)
-
-
-class FFmpegOutputExistsError(FFmpegBase, RuntimeError):
-    """Raised when FFmpeg refuses to overwrite an existing output file."""
-
-    def __init__(self, output: str):
-        message = f"Output file already exists and will not be overwritten: {output}."
-        self.output = output
-        super().__init__(message)
-
-
-class CodecCompatibilityError(FFmpegBase, RuntimeError):
-    """
-    Raised when the specified codec(s) are incompatible or unsupported by FFmpeg
-    for the given input/output formats or settings.
-    """
-
-    def __init__(
-        self,
-        codec: VideoCodec | AudioCodec,
-        format: VideoFormat,
-    ):
-        self.suggested_format = (
-            suggest_compatible_formats(codec)
-            if isinstance(codec, VideoCodec)
-            else suggest_audio_compatible_formats(codec)
-        )
-        message = (
-            f"Codec compatibility error: '{codec}' is not incompatible on {format}.\n"
-            f"Try one of: {self.suggested_format}."
-        )
-        self.codec = codec
-        self.format = format
-        super().__init__(message)
 
 
 class DownloadGotCanceledError(DownloaderBase):
@@ -172,7 +99,31 @@ class YtdlpPlaylistGetInfoError(YtDlpBase, RuntimeError):
     """Raised when an error occurs while retrieving playlist info with yt-dlp."""
 
     def __init__(self, url: str, error_code: Optional[int], output: str):
-        message = f"Failed to get video info for {url}"
+        message = f"Failed to get playlist info for {url}"
         self.error_code = error_code
         self.output = output
+        super().__init__(message)
+
+
+class PlaylistDownloadError(DownloaderBase):
+    """Raised when a playlist download fails entirely."""
+
+    def __init__(self, url: str, reason: str):
+        message = f"Playlist download failed for '{url}': {reason}"
+        self.url = url
+        self.reason = reason
+        super().__init__(message)
+
+
+class PlaylistCancelledError(DownloaderBase):
+    """Raised when an in-progress playlist download is cancelled."""
+
+    def __init__(self, playlist_id: str, completed: int, total: int):
+        message = (
+            f"Playlist '{playlist_id}' was cancelled after "
+            f"{completed}/{total} videos."
+        )
+        self.playlist_id = playlist_id
+        self.completed = completed
+        self.total = total
         super().__init__(message)

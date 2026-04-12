@@ -1,23 +1,76 @@
 """
-AsyncYT - A comprehensive async Any website downloader library
-Uses yt-dlp and ffmpeg with automatic binary management
+core.py
+-------
+AsyncYT core downloader.
+
+Key improvements over the previous version
+-------------------------------------------
+* **Real-time FFmpeg progress** — yt-dlp is launched with
+  ``--external-downloader ffmpeg --external-downloader-args
+  "ffmpeg:-progress pipe:1 -loglevel error"``.  FFmpeg writes its
+  key=value progress blocks directly onto stdout (pipe:1), which we
+  parse in the same line-reading loop as yt-dlp's own output, giving
+  accurate ``encoding_percentage``, ``encoding_fps``, ``encoding_speed``,
+  ``encoding_frame``, ``encoding_bitrate``, ``encoding_size``, and
+  ``encoding_time``.
+
+* **Working cancel** — on POSIX systems we kill the entire process *group*
+  (``os.killpg``); on Windows we use ``taskkill /F /T`` to kill the
+  process tree so child FFmpeg processes are also terminated.
+
+* **Native playlist support** — :class:`PlaylistInfo`, :class:`PlaylistVideoInfo`,
+  :class:`PlaylistConfig`, :class:`PlaylistDownloadProgress`, and
+  :class:`PlaylistItemResult` are first-class models.  Per-item thumbnails
+  are populated from yt-dlp's flat-playlist output.  Concurrent downloads
+  are supported via ``PlaylistConfig.concurrency``.
 """
 
-import asyncio
-from json import loads
-import os
-import re
-from pathlib import Path
-import shutil
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, overload
-from collections.abc import Callable as Callable2
-import logging
-import warnings
-import tempfile
+from __future__ import annotations
 
-from .enums import ProgressStatus, VideoFormat, VideoCodec, AudioCodec
-from .exceptions import *
-from .basemodels import *
+import asyncio
+import logging
+import os
+import platform
+import re
+import shutil
+import signal
+import tempfile
+import warnings
+from json import loads
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, overload
+from collections.abc import Callable as CallableABC
+
+from .basemodels import (
+    DownloadConfig,
+    DownloadProgress,
+    DownloadRequest,
+    DownloadResponse,
+    PlaylistConfig,
+    PlaylistDownloadProgress,
+    PlaylistInfo,
+    PlaylistItemResult,
+    PlaylistRequest,
+    PlaylistResponse,
+    PlaylistVideoInfo,
+    SearchRequest,
+    SearchResponse,
+    VideoInfo,
+)
+from .builder import build_download_command
+from .enums import PlaylistStatus, ProgressStatus
+from .exceptions import (
+    AsyncYTBase,
+    DownloadAlreadyExistsError,
+    DownloadGotCanceledError,
+    DownloadNotFoundError,
+    PlaylistCancelledError,
+    PlaylistDownloadError,
+    YtdlpDownloadError,
+    YtdlpGetInfoError,
+    YtdlpPlaylistGetInfoError,
+    YtdlpSearchError,
+)
 from .utils import (
     call_callback,
     clean_youtube_url,
@@ -25,142 +78,399 @@ from .utils import (
     get_unique_filename,
     get_unique_path,
 )
-from .binaries import AsyncFFmpeg
+from .binaries import BinaryManager
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["AsyncYT", "Downloader"]
 
+_IS_WINDOWS = platform.system().lower() == "windows"
 
-class AsyncYT(AsyncFFmpeg):
+
+# [download]  45.3% of ~  50.00MiB at    3.20MiB/s ETA 00:08
+_RE_DOWNLOAD = re.compile(
+    r"\[download\]\s+"
+    r"(?P<pct>[\d.]+)%"
+    r"(?:\s+of\s+~?\s*(?P<total>[\d.]+\s*\S+))?"
+    r"(?:\s+at\s+(?P<speed>[\d.]+\s*\S+/s))?"
+    r"(?:\s+ETA\s+(?P<eta>[\d:]+))?"
+)
+
+_RE_MERGER = re.compile(r"\[Merger\]", re.IGNORECASE)
+_RE_CONVERTOR = re.compile(r"\[VideoConvertor\]|\[ExtractAudio\]", re.IGNORECASE)
+_RE_REMUXER = re.compile(r"\[VideoRemuxer\]", re.IGNORECASE)
+_RE_DESTINATION = re.compile(
+    r"(?:\[download\] Destination:|Merging formats into)\s+(.+)"
+)
+
+# FFmpeg -progress key=value line (e.g. "out_time=00:00:05.123456")
+_RE_FFMPEG_KV = re.compile(r"^(?P<key>[a-zA-Z_]+)=(?P<value>.+)$")
+
+
+def _parse_eta(eta_str: str) -> int:
+    parts = eta_str.split(":")
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(float(parts[2]))
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(float(parts[1]))
+        return int(float(parts[0]))
+    except (ValueError, IndexError):
+        return 0
+
+
+def _out_time_to_seconds(t: str) -> float:
+    """Convert 'HH:MM:SS.ffffff' or 'SS.ffffff' to float seconds."""
+    try:
+        t = t.strip()
+        parts = t.split(":")
+        if len(parts) == 3:
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+        if len(parts) == 2:
+            return float(parts[0]) * 60 + float(parts[1])
+        return float(parts[0])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _bytes_to_human(n: int) -> str:
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024:
+            return f"{n:.1f}{unit}"
+        n //= 1024
+    return f"{n:.1f}TiB"
+
+
+class _FfmpegProgressParser:
     """
-    AsyncYT: Asynchronous YouTube Downloader and Searcher
+    Stateful parser for FFmpeg ``-progress pipe:1`` key=value blocks.
 
-    This class provides asynchronous methods for downloading YouTube videos, playlists, and searching for videos using yt-dlp and FFmpeg. It supports progress tracking, flexible configuration, and API-friendly response formats.
-
-    :param bin_dir: Path to the directory containing yt-dlp and FFmpeg binaries.
-    :type bin_dir: Optional[str | Path]
+    FFmpeg emits groups of key=value pairs terminated by
+    ``progress=continue`` or ``progress=end``.  We accumulate the block
+    and flush it once we see the terminator.
     """
 
-    def __init__(self, bin_dir: Optional[str | Path] = None):
-        """
-        Initialize the AsyncYT instance.
+    def __init__(self, progress: DownloadProgress, total_duration: float):
+        self.progress = progress
+        self.total_duration = total_duration
+        self._block: Dict[str, str] = {}
 
-        :param bin_dir: Directory path for binary files (yt-dlp, FFmpeg).
-        :type bin_dir: Optional[str | Path]
+    def feed(self, line: str) -> bool:
         """
+        Feed one line.  Returns True if ``progress`` was updated.
+        ``line`` should already be stripped.
+        """
+        m = _RE_FFMPEG_KV.match(line)
+        if not m:
+            return False
 
-        super().__init__(setup_only_ffmpeg=False, bin_dir=bin_dir)
+        key = m.group("key")
+        value = m.group("value").strip()
+
+        if key == "progress":
+            changed = self._flush()
+            self._block = {}
+            if value == "end":
+                self.progress.encoding_percentage = 100.0
+                self.progress.status = ProgressStatus.ENCODING
+                return True
+            return changed
+
+        self._block[key] = value
+        return False
+
+    def _flush(self) -> bool:
+        b = self._block
+        if not b:
+            return False
+
+        p = self.progress
+        p.status = ProgressStatus.ENCODING
+        changed = False
+
+        if "frame" in b:
+            try:
+                p.encoding_frame = int(b["frame"])
+                changed = True
+            except ValueError:
+                pass
+
+        if "fps" in b:
+            try:
+                val = float(b["fps"])
+                if val > 0:
+                    p.encoding_fps = val
+                    changed = True
+            except ValueError:
+                pass
+
+        if "bitrate" in b:
+            p.encoding_bitrate = b["bitrate"]
+            changed = True
+
+        if "total_size" in b:
+            try:
+                size_bytes = int(b["total_size"])
+                if size_bytes > 0:
+                    p.encoding_size = _bytes_to_human(size_bytes)
+                    changed = True
+            except ValueError:
+                pass
+
+        if "speed" in b:
+            raw = b["speed"].strip()
+            if raw and raw != "N/A":
+                p.encoding_speed = raw
+                changed = True
+
+        if "out_time" in b:
+            raw_time = b["out_time"].strip()
+            # FFmpeg sometimes emits negative out_time at the very start
+            if not raw_time.startswith("-"):
+                p.encoding_time = raw_time
+                elapsed = _out_time_to_seconds(raw_time)
+                if self.total_duration > 0:
+                    pct = min(round((elapsed / self.total_duration) * 100, 2), 100.0)
+                    if pct != p.encoding_percentage:
+                        p.encoding_percentage = pct
+                        changed = True
+
+        return changed
+
+
+def _update_download_progress(
+    line: str,
+    progress: DownloadProgress,
+    ffmpeg_parser: _FfmpegProgressParser,
+) -> bool:
+    """
+    Parse one line of yt-dlp (or embedded FFmpeg) output.
+    Returns True if ``progress`` changed and the callback should fire.
+    """
+    stripped = line.strip()
+
+    # --- FFmpeg -progress pipe:1 key=value lines ---
+    # These are interleaved with yt-dlp output when using --external-downloader ffmpeg
+    if _RE_FFMPEG_KV.match(stripped):
+        return ffmpeg_parser.feed(stripped)
+
+    # --- Phase change markers ---
+    if _RE_MERGER.search(line):
+        if progress.status != ProgressStatus.MERGING:
+            progress.status = ProgressStatus.MERGING
+            return True
+        return False
+
+    if _RE_CONVERTOR.search(line):
+        if progress.status != ProgressStatus.ENCODING:
+            progress.status = ProgressStatus.ENCODING
+            progress.encoding_percentage = 0.0
+            return True
+        return False
+
+    if _RE_REMUXER.search(line):
+        if progress.status != ProgressStatus.REMUXING:
+            progress.status = ProgressStatus.REMUXING
+            return True
+        return False
+
+    # --- Title from destination line ---
+    dm = _RE_DESTINATION.search(line)
+    if dm:
+        progress.title = Path(dm.group(1).strip()).stem
+        return False
+
+    # --- yt-dlp download progress line ---
+    m = _RE_DOWNLOAD.search(line)
+    if m:
+        old_pct = progress.percentage
+        progress.percentage = min(float(m.group("pct")), 100.0)
+        if m.group("speed"):
+            progress.speed = m.group("speed").strip()
+        if m.group("eta"):
+            progress.eta = _parse_eta(m.group("eta"))
+        progress.status = ProgressStatus.DOWNLOADING
+        return progress.percentage != old_pct
+
+    return False
+
+
+async def _kill_process(process: asyncio.subprocess.Process) -> None:
+    """
+    Terminate a process and all its children.
+
+    On POSIX, we kill the entire process group.
+    On Windows, we use ``taskkill /F /T`` to recursively kill the tree.
+    """
+    pid = process.pid
+    try:
+        if _IS_WINDOWS:
+            kill_cmd = ["taskkill", "/F", "/T", "/PID", str(pid)]
+            kill_proc = await asyncio.create_subprocess_exec(
+                *kill_cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await kill_proc.wait()
+        else:
+            if hasattr(os, "killpg"):
+                try:
+                    pgid = os.getpgid(pid)  # type: ignore
+                    os.killpg(pgid, signal.SIGKILL)  # type: ignore
+                except ProcessLookupError:
+                    pass
+    except Exception as e:
+        logger.warning("Failed to kill process %s: %s", pid, e)
+    finally:
+        try:
+            await process.wait()
+        except Exception:
+            pass
+
+
+async def _read_process_output(process: asyncio.subprocess.Process):
+    """Async generator yielding decoded stdout lines."""
+    assert process.stdout is not None
+    while True:
+        line = await process.stdout.readline()
+        if not line:
+            break
+        yield line.decode("utf-8", errors="replace")
+
+
+class AsyncYT(BinaryManager):
+    """
+    AsyncYT: Asynchronous media downloader powered by yt-dlp.
+
+    Supports single-video downloads, audio extraction, YouTube search,
+    and native playlist downloads — all with real-time progress callbacks.
+
+    FFmpeg encoding/download progress is captured via
+    ``--external-downloader ffmpeg -progress pipe:1`` so you receive
+    accurate frame, fps, speed, bitrate, size, and percentage updates.
+
+    :param bin_dir: Directory containing yt-dlp (and optionally ffmpeg) binaries.
+    """
+
+    def __init__(self, bin_dir=None):
+        super().__init__(bin_dir=bin_dir)
+        # Maps download_id → asyncio subprocess (single videos)
+        self._downloads: Dict[str, asyncio.subprocess.Process] = {}
+        # Maps playlist_id → asyncio.Event (set to request cancellation)
+        self._playlist_cancel_events: Dict[str, asyncio.Event] = {}
 
     async def get_video_info(self, url: str) -> VideoInfo:
         """
-        Asynchronously retrieve video information from a given URL using yt-dlp.
+        Retrieve video metadata from *url* using yt-dlp.
 
-        :param url: The URL of the video to retrieve information for.
-        :type url: str
-        :return: VideoInfo object containing the video's metadata.
-        :rtype: VideoInfo
-        :raises YtdlpGetInfoError: If yt-dlp fails to retrieve video information.
+        :param url: Video URL.
+        :return: :class:`VideoInfo` with title, duration, thumbnail, etc.
+        :raises YtdlpGetInfoError: If yt-dlp returns a non-zero exit code.
         """
         url = clean_youtube_url(url)
         cmd = [str(self.ytdlp_path), "--dump-json", "--no-warnings", url]
-
         process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-
         stdout, stderr = await process.communicate()
-
         if process.returncode != 0:
             raise YtdlpGetInfoError(url, process.returncode, stderr.decode())
+        return VideoInfo.from_dict(loads(stdout.decode()))
 
-        data = loads(stdout.decode())
-        return VideoInfo.from_dict(data)
-
-    async def _search(self, query: str, max_results: int = 10) -> List[VideoInfo]:
+    async def get_playlist_info(
+        self,
+        url: str,
+        max_videos: Optional[int] = None,
+    ) -> PlaylistInfo:
         """
-        Search for videos by query.
+        Fetch full playlist metadata, including per-video thumbnails.
 
-        :param query: Search query string.
-        :type query: str
-        :param max_results: Maximum number of results to return.
-        :type max_results: int
-        :return: List of VideoInfo objects.
-        :rtype: List[VideoInfo]
-        :raises YtdlpSearchError: If yt-dlp search fails.
+        Uses yt-dlp's ``--flat-playlist`` so it is fast — no individual
+        video pages are fetched.  Thumbnails come from the flat data that
+        YouTube/yt-dlp provides in the playlist manifest.
+
+        :param url: Playlist URL.
+        :param max_videos: Limit to this many entries (None = all).
+        :return: :class:`PlaylistInfo` with all :class:`PlaylistVideoInfo` entries.
+        :raises YtdlpPlaylistGetInfoError: If yt-dlp fails.
         """
-
-        search_url = f"ytsearch{max_results}:{query}"
-
-        cmd = [str(self.ytdlp_path), "--dump-json", "--no-warnings", search_url]
-
+        cmd = [
+            str(self.ytdlp_path),
+            "--dump-json",
+            "--flat-playlist",
+            "--no-warnings",
+            url,
+        ]
         process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise YtdlpPlaylistGetInfoError(url, process.returncode, stderr.decode())
+
+        raw_lines = stdout.decode().strip().splitlines()
+        raw_entries = [loads(line) for line in raw_lines if line.strip()]
+
+        return PlaylistInfo.from_ytdlp(
+            raw_entries, playlist_url=url, max_videos=max_videos
         )
 
+    async def _search(self, query: str, max_results: int = 10) -> List[VideoInfo]:
+        """Internal YouTube search via yt-dlp."""
+        search_url = f"ytsearch{max_results}:{query}"
+        cmd = [
+            str(self.ytdlp_path),
+            "--dump-json",
+            "--no-warnings",
+            "--match-filter",
+            "live_status = 'not_live' & duration > 0",
+            search_url,
+        ]
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         stdout, stderr = await process.communicate()
-
         if process.returncode != 0:
             raise YtdlpSearchError(query, process.returncode, stderr.decode())
+        return [
+            VideoInfo.from_dict(loads(line))
+            for line in stdout.decode().strip().splitlines()
+            if line.strip()
+        ]
 
-        results = []
-        for line in stdout.decode().strip().split("\n"):
-            if line:
-                data = loads(line)
-                results.append(VideoInfo.from_dict(data))
-
-        return results
-
-    def _get_config(
-        self,
-        *args,
-        **kwargs: Dict[
-            str,
-            Union[
-                str,
-                Optional[DownloadConfig],
-                Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]],
-            ],
-        ],
-    ):
+    def _get_config(self, *args, **kwargs):
         """
-        Parse and validate download configuration arguments.
+        Parse positional / keyword arguments into ``(url, config, callback, finalize)``.
 
-        :param args: Positional arguments (url, config, progress_callback, DownloadRequest).
-        :param kwargs: Keyword arguments (url, config, progress_callback, request).
-        :return: Tuple of (url, config, progress_callback, finalize)
-        :rtype: Tuple[str, Optional[DownloadConfig], Optional[Callable], bool]
-        :raises TypeError: If arguments are invalid.
+        Accepts:
+        - ``(url: str, config: DownloadConfig, callback, finalize: bool)`` positionally
+        - ``url=``, ``config=``, ``progress_callback=``, ``finalize=`` as kwargs
+        - A :class:`DownloadRequest` as first positional arg or ``request=`` kwarg
         """
-
         url: Optional[str] = None
         config: Optional[DownloadConfig] = None
-        progress_callback: Optional[
-            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
-        ] = None
-        finalize: bool = False
+        progress_callback = None
+        finalize: bool = True
+
         if "url" in kwargs:
-            url = kwargs.get("url")  # type: ignore
-            if not isinstance(url, str):
-                raise TypeError("url must be str!")
+            url = kwargs["url"]
         if "config" in kwargs:
-            config = kwargs.get("config")  # type: ignore
-            if not isinstance(config, DownloadConfig):
-                raise TypeError("config must be DownloadConfig!")
+            config = kwargs["config"]
         if "progress_callback" in kwargs:
-            progress_callback = kwargs.get("progress_callback")  # type: ignore
-            if not isinstance(progress_callback, Callable2):
-                raise TypeError("progress_callback must be callable!")
+            progress_callback = kwargs["progress_callback"]
         if "finalize" in kwargs:
-            finalize = kwargs.get("finalize")  # type: ignore
-            if not isinstance(finalize, bool):
-                raise TypeError("finalize must be bool!")
+            finalize = kwargs["finalize"]
         if "request" in kwargs:
-            request = kwargs.get("request")
-            if not isinstance(request, DownloadRequest):
-                raise TypeError("request must be DownloadRequest!")
-            url = request.url
-            config = request.config
+            req = kwargs["request"]
+            url = req.url
+            config = req.config
+
         for arg in args:
             if isinstance(arg, str):
                 url = arg
@@ -168,82 +478,68 @@ class AsyncYT(AsyncFFmpeg):
                 config = arg
             elif isinstance(arg, bool):
                 finalize = arg
-            elif isinstance(arg, Callable):
+            elif isinstance(arg, CallableABC):
                 progress_callback = arg
             elif isinstance(arg, DownloadRequest):
                 url = arg.url
                 config = arg.config
-        if not url:
-            raise TypeError("url is a must!")
 
-        return (url, config, progress_callback, finalize)
+        if not url:
+            raise TypeError("url is required")
+        return url, config, progress_callback, finalize
 
     async def finalize_download(
         self,
-        temp_dir: Union["tempfile.TemporaryDirectory", Path],
+        temp_dir: Union[tempfile.TemporaryDirectory, Path],
         output_dir: Path,
-        config: "DownloadConfig",
+        config: DownloadConfig,
     ) -> List[Path]:
         """
-        Move processed files from the temporary directory to the final output directory.
+        Move processed files from *temp_dir* to *output_dir*.
 
-        :param temp_dir: The temporary directory object (will be cleaned up).
-        :type temp_dir: Union[tempfile.TemporaryDirectory, Path]
-        :param output_dir: The destination directory for final files.
-        :type output_dir: Path
-        :param config: The download configuration (used for overwrite settings).
-        :type config: DownloadConfig
-        :return: List of paths to moved files.
-        :rtype: List[Path]
+        :param temp_dir: Temporary directory (cleaned up afterwards).
+        :param output_dir: Final destination directory.
+        :param config: Download config (used for overwrite setting).
+        :return: List of moved :class:`Path` objects.
         """
-
-        moved_files = []
-        if isinstance(temp_dir, tempfile.TemporaryDirectory):
-            temp_dir = Path(temp_dir.name)
+        moved: List[Path] = []
+        td = (
+            Path(temp_dir.name)
+            if isinstance(temp_dir, tempfile.TemporaryDirectory)
+            else temp_dir
+        )
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Iterate through all files inside the temporary directory
-            for item in temp_dir.iterdir():
+            for item in td.iterdir():
                 if item.is_dir():
                     continue
-                    
-                dest_path = output_dir / item.name
-
-                # Handle name conflicts
-                if dest_path.exists():
-                    if config.ffmpeg_config.overwrite:
-                        destination = dest_path
-                    else:
-                        destination = Path(get_unique_path(output_dir, item.name))
+                dest = output_dir / item.name
+                overwrite = config.encoding.overwrite if config.encoding else False
+                if dest.exists():
+                    destination = (
+                        dest
+                        if overwrite
+                        else Path(get_unique_path(output_dir, item.name))
+                    )
                 else:
-                    destination = dest_path
-
-                # Try to move the file
+                    destination = dest
                 try:
                     await asyncio.to_thread(shutil.move, str(item), str(destination))
-                    logger.debug(f"Moved {item} → {destination}")
-                    moved_files.append(destination)
+                    logger.debug("Moved %s → %s", item, destination)
+                    moved.append(destination)
                 except Exception as e:
-                    logger.error(f"Failed to move {item} to {destination}: {e}")
+                    logger.error("Failed to move %s → %s: %s", item, destination, e)
                     raise
-
-        except Exception as e:
-            logger.exception(f"Unexpected error during finalize: {e}")
-            raise
         finally:
-            # Always clean up the temp directory, even if moves failed
             try:
                 if isinstance(temp_dir, Path):
                     if temp_dir.exists():
                         await asyncio.to_thread(shutil.rmtree, temp_dir)
                 else:
                     await asyncio.to_thread(temp_dir.cleanup)
-                logger.debug(f"Temporary directory cleaned up.")
             except Exception as e:
-                logger.warning(f"Failed to clean up temp dir: {e}")
-        
-        return moved_files
+                logger.warning("Failed to clean temp dir: %s", e)
+        return moved
 
     @overload
     async def download(
@@ -253,7 +549,7 @@ class AsyncYT(AsyncFFmpeg):
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
-        finalize: bool = True
+        finalize: bool = True,
     ) -> Path: ...
 
     @overload
@@ -263,84 +559,114 @@ class AsyncYT(AsyncFFmpeg):
         progress_callback: Optional[
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
-        finalize: bool = True
+        finalize: bool = True,
     ) -> Path: ...
 
     async def download(self, *args, **kwargs) -> Path:
         """
-        Asynchronously download media from a given URL using yt-dlp, track progress, and process the output file.
+        Download a single video (or audio) from *url*.
 
-        :param args: url (str) or request (DownloadRequest)
-        :param kwargs: config (Optional[DownloadConfig]), progress_callback (Optional[Callable])
-        :return: The full File output.
-        :rtype: Path
-        :raises DownloadAlreadyExistsError: If a download with the same ID is already in progress.
-        :raises YtdlpDownloadError: If yt-dlp returns a non-zero exit code.
-        :raises Exception: If the output file cannot be determined from yt-dlp output.
-        :raises DownloadGotCanceledError: If the download is cancelled.
-        :raises FileNotFoundError: If FFmpeg wasn't installed.
+        Progress is streamed in real-time through *progress_callback*.  The
+        callback receives a :class:`DownloadProgress` object on every
+        meaningful change (download percentage, FFmpeg frame/fps/speed/etc.).
+
+        FFmpeg real-time fields populated in *progress_callback*:
+
+        * ``encoding_percentage`` — 0-100 based on ``out_time`` / video duration
+        * ``encoding_fps``        — frames per second
+        * ``encoding_speed``      — e.g. ``"2.50x"``
+        * ``encoding_frame``      — current frame index
+        * ``encoding_bitrate``    — e.g. ``"2048kbits/s"``
+        * ``encoding_size``       — e.g. ``"45.2MiB"``
+        * ``encoding_time``       — ``HH:MM:SS.ffffff``
+
+        :param url: Video URL **or** a :class:`DownloadRequest`.
+        :param config: Optional :class:`DownloadConfig`.
+        :param progress_callback: Async or sync callable receiving :class:`DownloadProgress`.
+        :param finalize: Move output from temp dir to ``config.output_path``.
+        :return: :class:`Path` to the downloaded file.
+        :raises DownloadAlreadyExistsError: Same download already running.
+        :raises YtdlpDownloadError: yt-dlp returned a non-zero exit code.
+        :raises DownloadGotCanceledError: :meth:`cancel` was called.
+        :raises FileNotFoundError: FFmpeg not found, or no output file produced.
         """
-
         url, config, progress_callback, finalize = self._get_config(*args, **kwargs)
-        if not config:
-            config = DownloadConfig()
-
+        config = config or DownloadConfig()
         url = clean_youtube_url(url)
+        id_ = get_id(url, config)
 
-        id = get_id(url, config)
-        if id in self._downloads:
-            raise DownloadAlreadyExistsError(id)
+        if id_ in self._downloads:
+            raise DownloadAlreadyExistsError(id_)
 
-        # Ensure output directory exists
-        output_dir = Path(config.output_path).resolve().absolute()
+        output_dir = Path(config.output_path).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
-        temp_dir = tempfile.TemporaryDirectory(delete=False)
-        temp_path = Path(temp_dir.name)
-        logger.debug(temp_path)
-        config.output_path = str(temp_path.absolute())
 
         if not self.ffmpeg_path:
-            raise FileNotFoundError("FFmpeg isn't installed")
+            raise FileNotFoundError("FFmpeg is not installed / not found")
 
-        config.ffmpeg_config.ffmpeg_path = str(self.ffmpeg_path)
+        # Temp dir — yt-dlp writes here first; we move on completion
+        temp_dir = tempfile.TemporaryDirectory(delete=False)
+        temp_path = Path(temp_dir.name)
+        config_for_run = config.model_copy(update={"output_path": str(temp_path)})
 
-        # Build yt-dlp command
-        cmd = self._build_download_command(url, config)
+        # Pre-fetch duration for encoding_percentage calculation
+        total_duration = 0.0
+        try:
+            info = await self.get_video_info(url)
+            total_duration = float(info.duration or 0)
+        except Exception:
+            pass  # non-fatal
 
-        # Create progress tracker
-        progress = DownloadProgress(url=url, percentage=0, id=id)
+        cmd = build_download_command(
+            ytdlp_path=str(self.ytdlp_path),
+            ffmpeg_path=str(self.ffmpeg_path),
+            url=url,
+            config=config_for_run,
+        )
+        logger.debug("yt-dlp command: %s", " ".join(cmd))
 
-        output_file: Optional[str] = None
+        progress = DownloadProgress(url=url, percentage=0.0, id=id_)
+        ffmpeg_parser = _FfmpegProgressParser(progress, total_duration)
+        last_pct = -1.0
+        last_enc_pct = -1.0
+        output: List[str] = []
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
+            # On POSIX, start_new_session=True puts the child in its own
+            # process group so we can killpg() the whole tree on cancel.
+            kwargs_proc: Dict[str, Any] = dict(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=temp_path,
             )
+            if not _IS_WINDOWS:
+                kwargs_proc["start_new_session"] = True
 
-            self._downloads[id] = process
-            output: List[str] = []
+            process = await asyncio.create_subprocess_exec(*cmd, **kwargs_proc)
+            self._downloads[id_] = process
 
-            async for line in self._read_process_output(process):
-                line = line.strip()
-                output.append(line)
+            async for line in _read_process_output(process):
+                output.append(line.rstrip())
+                if not line.strip():
+                    continue
 
-                if line:
-                    old_percentage = progress.percentage
-                    self._parse_progress(line, progress)
+                changed = _update_download_progress(
+                    line.rstrip(), progress, ffmpeg_parser
+                )
 
-                    if progress_callback and progress.percentage > old_percentage:
+                if progress_callback and changed:
+                    should_fire = False
+                    if progress.status == ProgressStatus.ENCODING:
+                        if progress.encoding_percentage != last_enc_pct:
+                            last_enc_pct = progress.encoding_percentage
+                            should_fire = True
+                    else:
+                        if progress.percentage != last_pct:
+                            last_pct = progress.percentage
+                            should_fire = True
+
+                    if should_fire:
                         await call_callback(progress_callback, progress)
-
-                    # safer filename detection
-                    match = re.search(
-                        r"(?i)([^\s]+?\.(?:mp4|m4a|mp3|webm|mkv|wav|flac|ogg|opus|aac))",
-                        line,
-                    )
-                    if not output_file and match and os.path.exists(match.group(1)):
-                        output_file = os.path.abspath(match.group(1))
 
             returncode = await process.wait()
 
@@ -349,134 +675,78 @@ class AsyncYT(AsyncFFmpeg):
                     url=url, output=output, cmd=cmd, error_code=returncode
                 )
 
-            if not output_file:
-                raise Exception("Could not determine output file from yt-dlp")
-
-            progress.status = ProgressStatus.DOWNLOADED
+            # Completion
+            progress.status = ProgressStatus.COMPLETED
             progress.percentage = 100.0
+            progress.encoding_percentage = 100.0
             if progress_callback:
                 await call_callback(progress_callback, progress)
 
-            ffmpeg_config = config.ffmpeg_config
-            ffmpeg_config.output_path = str(temp_path)
-            ext = output_file.split(".")[-1].lower()  # lowercase to be safe
-
-            # Check if extension is in VideoFormat
-            is_video = ext in (fmt.value for fmt in VideoFormat)
-            if not config.extract_audio:
-                ffmpeg_config.video_format = config.video_format
-                
-                if config.video_format == VideoFormat.MP4:
-                    try:
-                        media_info = await self.get_file_info(output_file)
-                        has_av1 = any(
-                            stream.codec_name == "av1" 
-                            for stream in media_info.streams 
-                            if stream.codec_type == "video"
-                        )
-                        has_opus = any(
-                            stream.codec_name == "opus"
-                            for stream in media_info.streams
-                            if stream.codec_type == "audio"
-                        )
-                        
-                        if has_av1:
-                            ffmpeg_config.video_codec = VideoCodec.H264
-                        if has_opus:
-                            ffmpeg_config.audio_codec = AudioCodec.AAC
-                    except Exception:
-                        ffmpeg_config.video_codec = VideoCodec.H264
-                        ffmpeg_config.audio_codec = AudioCodec.AAC
-                        
-            elif config.extract_audio:
-                if is_video:
-                    ffmpeg_config.extract_audio = True
-                ffmpeg_config.audio_codec = ffmpeg_config.get_audio_codec(config.audio_format)
-
-            result = await self.process(
-                output_file,
-                ffmpeg_config,
-                progress_callback,
-                id=id,
-                progress=progress,
-                embed_thumbnail=config.embed_thumbnail,
-                keep_thumbnail=config.write_thumbnail,
-            )
-            config.output_path = str(output_dir.absolute().resolve())
             if finalize:
-                moved_files = await self.finalize_download(temp_dir, output_dir, config)
-                
-                if moved_files:
-                    logger.info(f"Download completed: {moved_files[0]}")
-                    return moved_files[0]
-                else:
-                    logger.error(f"No files were moved to output directory {output_dir}")
-                    raise FileNotFoundError(f"No output file found after processing")
+                moved = await self.finalize_download(temp_dir, output_dir, config)
+                if moved:
+                    logger.info("Download completed: %s", moved[0])
+                    return moved[0]
+                raise FileNotFoundError("No output file found after processing")
 
-            return Path(temp_path) / result
+            files = [f for f in temp_path.iterdir() if f.is_file()]
+            if files:
+                return files[0]
+            raise FileNotFoundError("No output file found in temp dir")
 
         except asyncio.CancelledError:
-            if id in self._downloads:
-                process = self._downloads[id]
-                process.kill()
-                await process.wait()
-            raise DownloadGotCanceledError(id)
+            proc = self._downloads.get(id_)
+            if proc:
+                await _kill_process(proc)
+            raise DownloadGotCanceledError(id_)
         except Exception:
             raise
-
         finally:
-            # await asyncio.shield(asyncio.to_thread(temp_dir.cleanup))
-            self._downloads.pop(id, None)
+            self._downloads.pop(id_, None)
 
-    async def cancel(self, download_id: str):
+    async def cancel(self, download_id: str) -> None:
         """
-        Cancel the downloading with download_id.
+        Cancel a running single-video download.
 
-        :param download_id: The ID of the download to cancel.
-        :type download_id: str
-        :raises DownloadNotFoundError: If the download ID is not found.
+        Kills the yt-dlp process **and** any child FFmpeg process.
+
+        :param download_id: The ID returned by :func:`get_id`.
+        :raises DownloadNotFoundError: If no download with that ID is running.
         """
-
         process = self._downloads.pop(download_id, None)
         if not process:
             raise DownloadNotFoundError(download_id)
-        process.kill()
-        await process.wait()
+        await _kill_process(process)
 
-    @overload
-    async def download_with_response(
-        self,
-        url: str,
-        config: Optional[DownloadConfig] = None,
-        progress_callback: Optional[
-            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
-        ] = None,
-    ) -> DownloadResponse: ...
-    @overload
-    async def download_with_response(
-        self,
-        request: DownloadRequest,
-        progress_callback: Optional[
-            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
-        ] = None,
-    ) -> DownloadResponse: ...
+    async def cancel_playlist(self, playlist_id: str) -> None:
+        """
+        Request cancellation of a running playlist download.
+
+        The playlist loop checks the cancel event between each video.
+        The currently-downloading video is also cancelled immediately.
+
+        :param playlist_id: The playlist ID returned by :func:`get_id`.
+        :raises DownloadNotFoundError: If no playlist with that ID is running.
+        """
+        event = self._playlist_cancel_events.get(playlist_id)
+        if not event:
+            raise DownloadNotFoundError(playlist_id)
+        event.set()
 
     async def download_with_response(self, *args, **kwargs) -> DownloadResponse:
         """
-        Download with API-friendly response format.
+        Download with an API-friendly :class:`DownloadResponse` return value.
 
-        :param args: url (str) or request (DownloadRequest)
-        :param kwargs: config (Optional[DownloadConfig]), progress_callback (Optional[Callable])
-        :return: DownloadResponse object with metadata and error info.
-        :rtype: DownloadResponse
+        Accepts the same arguments as :meth:`download`.
+
+        :return: :class:`DownloadResponse` with metadata and optional error.
         """
-
+        id_: Optional[str] = None
         try:
             url, config, progress_callback, finalize = self._get_config(*args, **kwargs)
             config = config or DownloadConfig()
-            id = get_id(url, config)
+            id_ = get_id(url, config)
 
-            # Get video info first
             try:
                 video_info = await self.get_video_info(url)
             except YtdlpGetInfoError as e:
@@ -484,21 +754,21 @@ class AsyncYT(AsyncFFmpeg):
                     success=False,
                     message="Failed to get video information",
                     error=f"error code: {e.error_code}\nOutput: {e.output}",
-                    id=id,
+                    id=id_,
                 )
             except Exception as e:
                 return DownloadResponse(
                     success=False,
                     message="Failed to get video information",
                     error=str(e),
-                    id=id,
+                    id=id_,
                 )
 
-            # Download the video
             filename = await self.download(url, config, progress_callback, finalize)
             file = Path(filename)
-            title = re.sub(r'[\\/:"*?<>|]', "_", video_info.title)
-            new_file = get_unique_filename(file, title)
+            new_file = get_unique_filename(
+                file, re.sub(r'[\\/:"*?<>|]', "_", video_info.title)
+            )
             file = file.rename(new_file)
 
             return DownloadResponse(
@@ -506,245 +776,318 @@ class AsyncYT(AsyncFFmpeg):
                 message="Download completed successfully",
                 filename=str(file.absolute()),
                 video_info=video_info,
-                id=id,
+                id=id_,
             )
         except AsyncYTBase:
             raise
-
         except Exception as e:
             return DownloadResponse(
-                success=False, message="Download failed", error=str(e), id=id
+                success=False,
+                message="Download failed",
+                error=str(e),
+                id=id_ or "",
             )
-
-    @overload
-    async def search(
-        self, query: str, max_results: Optional[int] = None
-    ) -> "SearchResponse": ...
-
-    @overload
-    async def search(self, *, request: "SearchRequest") -> "SearchResponse": ...
 
     async def search(
         self,
         query: Optional[str] = None,
         max_results: Optional[int] = None,
         *,
-        request: Optional["SearchRequest"] = None,
+        request: Optional[SearchRequest] = None,
     ) -> SearchResponse:
         """
-        Perform an asynchronous search operation.
+        Search YouTube for videos.
 
-        :param query: The search query string. Required if `request` is not provided.
-        :type query: Optional[str]
-        :param max_results: Maximum number of results to return. Defaults to 10.
-        :type max_results: Optional[int]
-        :param request: Optional SearchRequest object containing search parameters.
-        :type request: Optional[SearchRequest]
-        :return: SearchResponse object with results and status.
-        :rtype: SearchResponse
-        :raises TypeError: If both `request` and either `query` or `max_results` are provided, or if neither is provided.
+        :param query: Search query (required when *request* is not given).
+        :param max_results: Maximum results (default 10, max 50).
+        :param request: Optional :class:`SearchRequest` (mutually exclusive with *query*).
+        :return: :class:`SearchResponse` with a list of :class:`VideoInfo` objects.
         """
-
         if request is not None:
             if query is not None or max_results is not None:
-                raise TypeError(
-                    "If you provide request, you cannot provide query, or max_results."
-                )
+                raise TypeError("Provide request OR (query + max_results), not both.")
         else:
             if query is None:
-                raise TypeError("You must provide query when request is not given.")
-
+                raise TypeError("query is required when request is not given.")
         if request:
             query = request.query
             max_results = request.max_results
-        if max_results is None:
-            max_results = 10
-
+        max_results = max_results or 10
         try:
-            results = await self._search(query, max_results)  # type: ignore
-
+            results = await self._search(query, max_results)  # type: ignore[arg-type]
             return SearchResponse(
                 success=True,
                 message=f"Found {len(results)} results",
                 results=results,
                 total_results=len(results),
             )
-
         except Exception as e:
             return SearchResponse(success=False, message="Search failed", error=str(e))
 
-    @overload
-    async def download_playlist(
+    async def get_playlist(
         self,
         url: str,
-        config: Optional[DownloadConfig] = None,
         max_videos: Optional[int] = None,
-        progress_callback: Optional[
-            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
-        ] = None,
-    ) -> PlaylistResponse: ...
+    ) -> PlaylistInfo:
+        """
+        Fetch playlist metadata without downloading any videos.
 
-    @overload
-    async def download_playlist(
-        self,
-        *,
-        request: PlaylistRequest,
-        progress_callback: Optional[
-            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
-        ] = None,
-    ) -> PlaylistResponse: ...
+        :param url: Playlist URL.
+        :param max_videos: Limit entries returned (None = all).
+        :return: :class:`PlaylistInfo` with per-video :class:`PlaylistVideoInfo` entries
+                 (each containing thumbnail URLs).
+        """
+        return await self.get_playlist_info(url, max_videos=max_videos)
 
     async def download_playlist(
         self,
         url: Optional[str] = None,
-        config: Optional[DownloadConfig] = None,
-        max_videos: Optional[int] = None,
+        playlist_config: Optional[PlaylistConfig] = None,
         progress_callback: Optional[
-            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+            Callable[[PlaylistDownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
+        *,
         request: Optional[PlaylistRequest] = None,
     ) -> PlaylistResponse:
         """
-        Asynchronously download videos from a YouTube playlist.
+        Download all (or a subset of) videos from a playlist.
 
-        You can provide either a `request` object containing all parameters, or specify `url`, `config`, and `max_videos` individually. If `request` is provided, you must not provide `url`, `config`, or `max_videos`.
+        Supports concurrent downloads via ``PlaylistConfig.concurrency``.
+        Progress is reported through *progress_callback* with a
+        :class:`PlaylistDownloadProgress` that includes both the overall
+        playlist state and the current video's :class:`DownloadProgress`.
 
-        :param url: The URL of the playlist to download. Required if `request` is not given.
-        :type url: Optional[str]
-        :param config: Download configuration options.
-        :type config: Optional[DownloadConfig]
-        :param max_videos: Maximum number of videos to download from the playlist. Defaults to 100.
-        :type max_videos: Optional[int]
-        :param progress_callback: Optional callback to report download progress.
-        :type progress_callback: Optional[Callable[[DownloadProgress], Union[None, Awaitable[None]]]]
-        :param request: An object containing all playlist download parameters.
-        :type request: Optional[PlaylistRequest]
-        :return: PlaylistResponse object with download results.
-        :rtype: PlaylistResponse
-        :raises TypeError: If both `request` and any of `url`, `config`, or `max_videos` are provided, or if neither is provided.
+        :param url: Playlist URL (required when *request* is not given).
+        :param playlist_config: Playlist-level configuration.
+        :param progress_callback: Async or sync callable receiving
+                                   :class:`PlaylistDownloadProgress` updates.
+        :param request: Optional :class:`PlaylistRequest`.
+        :return: :class:`PlaylistResponse` with per-item results and aggregated stats.
+        :raises TypeError: If conflicting arguments are supplied.
         """
-
         if request is not None:
-            if url is not None or config is not None or max_videos is not None:
-                raise TypeError(
-                    "If you provide request, you cannot provide url, config, or max_videos."
-                )
+            if url is not None or playlist_config is not None:
+                raise TypeError("Provide request OR (url + playlist_config), not both.")
         else:
             if url is None:
-                raise TypeError("You must provide url when request is not given.")
+                raise TypeError("url is required when request is not given.")
 
         if request:
             url = request.url
-            config = request.config
-            max_videos = request.max_videos
-        if not max_videos:
-            max_videos = 100
-        if not url:
-            raise TypeError("the URL is must.")  # even tho it will not be ever raised
+            playlist_config = request.playlist_config
+
+        playlist_config = playlist_config or PlaylistConfig()
+        item_config = playlist_config.item_config or DownloadConfig()
+        playlist_id = get_id(url, item_config)  # type: ignore[arg-type]
+
+        # Create cancellation event
+        cancel_event = asyncio.Event()
+        self._playlist_cancel_events[playlist_id] = cancel_event
+
+        # Live progress object
+        pl_progress = PlaylistDownloadProgress(
+            playlist_id=playlist_id,
+            status=PlaylistStatus.FETCHING_INFO,
+        )
+
+        async def _emit() -> None:
+            if progress_callback:
+                await call_callback(progress_callback, pl_progress)
+
+        await _emit()
+
         try:
-            config = config or DownloadConfig()
-            id = get_id(url, config)
+            # --- Fetch playlist info ---
+            try:
+                max_vids = playlist_config.max_videos or None
+                playlist_info = await self.get_playlist_info(url, max_videos=max_vids)  # type: ignore[arg-type]
+            except YtdlpPlaylistGetInfoError as exc:
+                raise PlaylistDownloadError(url, str(exc)) from exc  # type: ignore[arg-type]
 
-            # Get playlist info
-            playlist_info = await self.get_playlist_info(url)
-            total_videos = min(len(playlist_info["entries"]), max_videos)
+            # Apply start/end index slicing
+            entries = playlist_info.entries
+            start = playlist_config.start_index - 1  # to 0-based
+            end = playlist_config.end_index  # None = all
+            entries = entries[start:end]
 
-            downloaded_files = []
-            failed_downloads = []
+            if playlist_config.reverse:
+                entries = list(reversed(entries))
 
-            for i, video_entry in enumerate(playlist_info["entries"][:max_videos]):
-                try:
-                    if progress_callback:
-                        overall_progress = DownloadProgress(
-                            url=url,
-                            title=f"Playlist item {i+1}/{total_videos}",
-                            percentage=(i / total_videos) * 100,
-                            id=id,
+            pl_progress.playlist_info = playlist_info
+            pl_progress.total_videos = len(entries)
+            pl_progress.status = PlaylistStatus.DOWNLOADING
+            await _emit()
+
+            results: List[PlaylistItemResult] = []
+            downloaded_files: List[str] = []
+            semaphore = asyncio.Semaphore(playlist_config.concurrency)
+
+            async def _download_one(entry: PlaylistVideoInfo) -> PlaylistItemResult:
+                """Download a single playlist entry, respecting the semaphore."""
+                async with semaphore:
+                    if cancel_event.is_set():
+                        return PlaylistItemResult(
+                            index=entry.playlist_index or 0,
+                            video_info=entry,
+                            success=False,
+                            error="Cancelled",
                         )
-                        progress_callback(overall_progress)
 
-                    filename = await self.download(video_entry["webpage_url"], config)
-                    downloaded_files.append(filename)
+                    # Per-video progress callback — update pl_progress and re-emit
+                    async def _video_cb(vp: DownloadProgress) -> None:
+                        pl_progress.current_video_progress = vp
+                        if progress_callback:
+                            await call_callback(progress_callback, pl_progress)
 
-                except Exception as e:
-                    failed_downloads.append(
-                        f"{video_entry.get('title', 'Unknown')}: {str(e)}"
-                    )
+                    pl_progress.current_index = entry.playlist_index or 0
+                    pl_progress.current_video = entry
+                    pl_progress.current_video_progress = None
+                    await _emit()
+
+                    try:
+                        filepath = await self.download(
+                            entry.url,
+                            item_config,
+                            _video_cb,
+                        )
+                        pl_progress.completed_videos += 1
+                        pl_progress._recalculate_percentage()
+                        result = PlaylistItemResult(
+                            index=entry.playlist_index or 0,
+                            video_info=entry,
+                            success=True,
+                            filepath=str(filepath),
+                        )
+                    except DownloadGotCanceledError:
+                        pl_progress.failed_videos += 1
+                        pl_progress._recalculate_percentage()
+                        result = PlaylistItemResult(
+                            index=entry.playlist_index or 0,
+                            video_info=entry,
+                            success=False,
+                            error="Cancelled",
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Playlist item %s failed: %s",
+                            entry.url,
+                            exc,
+                        )
+                        pl_progress.failed_videos += 1
+                        pl_progress._recalculate_percentage()
+                        result = PlaylistItemResult(
+                            index=entry.playlist_index or 0,
+                            video_info=entry,
+                            success=False,
+                            error=str(exc),
+                        )
+                        if not playlist_config.skip_on_error:
+                            raise
+
+                    pl_progress.results.append(result)
+                    await _emit()
+                    return result
+
+            # --- Run downloads ---
+            if playlist_config.concurrency == 1:
+                # Sequential — simpler, friendlier for rate limits
+                for entry in entries:
+                    if cancel_event.is_set():
+                        break
+                    result = await _download_one(entry)
+                    results.append(result)
+                    if result.filepath:
+                        downloaded_files.append(result.filepath)
+            else:
+                # Concurrent
+                tasks = [asyncio.create_task(_download_one(e)) for e in entries]
+                try:
+                    done_results = await asyncio.gather(*tasks, return_exceptions=True)
+                    for r in done_results:
+                        if isinstance(r, PlaylistItemResult):
+                            results.append(r)
+                            if r.filepath:
+                                downloaded_files.append(r.filepath)
+                        elif (
+                            isinstance(r, Exception)
+                            and not playlist_config.skip_on_error
+                        ):
+                            raise r
+                except asyncio.CancelledError:
+                    for t in tasks:
+                        t.cancel()
+                    raise
+
+            # Detect if cancelled
+            was_cancelled = cancel_event.is_set()
+            success = pl_progress.completed_videos > 0
+
+            pl_progress.status = (
+                PlaylistStatus.CANCELLED
+                if was_cancelled
+                else PlaylistStatus.COMPLETED if success else PlaylistStatus.FAILED
+            )
+            pl_progress.overall_percentage = (
+                round(pl_progress.completed_videos / len(entries) * 100, 1)
+                if entries
+                else 100.0
+            )
+            await _emit()
+
+            if was_cancelled:
+                raise PlaylistCancelledError(
+                    playlist_id,
+                    pl_progress.completed_videos,
+                    pl_progress.total_videos,
+                )
 
             return PlaylistResponse(
-                success=True,
-                message=f"Downloaded {len(downloaded_files)} out of {total_videos} videos",
+                success=success,
+                message=(
+                    f"Downloaded {pl_progress.completed_videos} of "
+                    f"{pl_progress.total_videos} videos"
+                ),
+                playlist_info=playlist_info,
+                results=results,
+                total_videos=pl_progress.total_videos,
+                successful_downloads=pl_progress.completed_videos,
+                failed_downloads=pl_progress.failed_videos,
                 downloaded_files=downloaded_files,
-                failed_downloads=failed_downloads,
-                total_videos=total_videos,
-                successful_downloads=len(downloaded_files),
             )
 
-        except Exception as e:
+        except PlaylistCancelledError:
+            raise
+        except PlaylistDownloadError:
+            raise
+        except asyncio.CancelledError:
+            raise PlaylistCancelledError(
+                playlist_id,
+                pl_progress.completed_videos,
+                pl_progress.total_videos,
+            )
+        except Exception as exc:
+            pl_progress.status = PlaylistStatus.FAILED
+            if progress_callback:
+                await call_callback(progress_callback, pl_progress)
             return PlaylistResponse(
                 success=False,
                 message="Playlist download failed",
-                error=str(e),
-                total_videos=0,
-                successful_downloads=0,
+                error=str(exc),
+                total_videos=pl_progress.total_videos,
+                successful_downloads=pl_progress.completed_videos,
+                failed_downloads=pl_progress.failed_videos,
             )
-
-    async def get_playlist_info(self, url: str) -> Dict[str, Any]:
-        """
-        Asynchronously retrieve information about a YouTube playlist using yt-dlp.
-
-        :param url: The URL of the YouTube playlist.
-        :type url: str
-        :return: Dictionary containing playlist entries and title.
-        :rtype: Dict[str, Any]
-        :raises YtdlpPlaylistGetInfoError: If the yt-dlp process fails to retrieve playlist information.
-        """
-
-        cmd = [
-            str(self.ytdlp_path),
-            "--dump-json",
-            "--flat-playlist",
-            "--no-warnings",
-            url,
-        ]
-
-        process = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-
-        stdout, stderr = await process.communicate()
-
-        if process.returncode != 0:
-            raise YtdlpPlaylistGetInfoError(url, process.returncode, stderr.decode())
-
-        entries = []
-        for line in stdout.decode().strip().split("\n"):
-            if line:
-                entries.append(loads(line))
-
-        return {
-            "entries": entries,
-            "title": (
-                entries[0].get("playlist_title", "Unknown Playlist")
-                if entries
-                else "Empty Playlist"
-            ),
-        }
-
-    # TODO: also add basemodel for just the playlist downloading and the get_playlist_info
+        finally:
+            self._playlist_cancel_events.pop(playlist_id, None)
 
 
 class DeprecatedDownloader(AsyncYT):
     """
     .. deprecated::
-        Use :class:`AsyncYT` instead. This class will be removed in a future release.
+        Use :class:`AsyncYT` instead.  Will be removed in a future release.
     """
 
-    def __init__(self, bin_dir: Optional[str | Path] = None):
-        """
-        .. deprecated::
-            Use :class:`AsyncYT` instead. This class will be removed in a future release.
-        """
+    def __init__(self, bin_dir=None):
         warnings.warn(
             "Downloader is deprecated and will be removed in a future release. "
             "Please use AsyncYT instead.",
