@@ -46,16 +46,34 @@ _QUALITY_FORMAT: dict[str, str] = {
     Quality.UHD_8K: "bestvideo[height<=4320]+bestaudio/best[height<=4320]/best",
 }
 
+# Formats that actually exist as source streams on platforms like YouTube.
+# Everything else is a *transcoded* output format — we must not filter by
+# ext in the -f selector or yt-dlp will find no matching stream and fall
+# back to bestaudio, which is usually opus/webm regardless of what you asked for.
+_NATIVE_AUDIO_EXTS = frozenset({"m4a", "mp3", "ogg", "opus", "webm", "aac"})
+
+# FFmpeg codec required to produce each lossless/PCM container correctly.
+# Without these, FFmpeg silently defaults to opus inside the container.
+_AUDIO_FORMAT_CODEC: dict[str, str] = {
+    "wav":  "pcm_s16le",
+    "flac": "flac",
+    "alac": "alac",
+    "aiff": "pcm_s16le",
+}
+
 
 def _format_selector(config: "DownloadConfig") -> str:
     quality = str(config.quality)
     if config.extract_audio:
         if config.audio_format and str(config.audio_format) != AudioFormat.COPY:
             fmt = str(config.audio_format)
-            return f"bestaudio[ext={fmt}]/bestaudio/best"
+            # Only restrict by ext when that format actually exists as a
+            # source stream; otherwise just fetch bestaudio and let
+            # --audio-format handle the transcode.
+            if fmt in _NATIVE_AUDIO_EXTS:
+                return f"bestaudio[ext={fmt}]/bestaudio/best"
         return "bestaudio/best"
     return _QUALITY_FORMAT.get(quality, "bestvideo*+bestaudio/best")
-
 
 
 def build_download_command(
@@ -122,35 +140,75 @@ def build_download_command(
             cmd += ["--remux-video", vfmt]
 
     # 7. Custom encoding via --postprocessor-args
-    #    We still apply encoding codec/CRF/etc. through ppa so they take
-    #    effect during the postprocessing re-encode step.  Progress comes
-    #    from the external-downloader step (see section 8).
-    if encoding is not None:
-        if config.extract_audio:
+    #
+    #    For audio formats that require a specific FFmpeg codec (wav, flac,
+    #    alac, aiff), we inject -c:a so FFmpeg doesn't silently default to
+    #    opus.  The user's explicit AudioEncodingConfig.codec always wins;
+    #    we only inject the implicit codec when none is set.
+    if config.extract_audio:
+        audio_fmt = str(config.audio_format) if config.audio_format else None
+        implicit_codec = _AUDIO_FORMAT_CODEC.get(audio_fmt or "")
+
+        if encoding is not None:
+            # User supplied an EncodingConfig — use it, but patch in the
+            # implicit codec if they didn't specify one themselves.
+            if implicit_codec and (
+                encoding.audio is None or not encoding.audio.codec
+            ):
+                from .encoding import AudioEncodingConfig
+                from .enums import AudioCodec
+
+                patched_audio = (encoding.audio or AudioEncodingConfig()).model_copy(
+                    update={"codec": implicit_codec}
+                )
+                encoding = encoding.model_copy(update={"audio": patched_audio})
+
             ppa = encoding.build_extract_audio_ppa()
             if ppa:
                 cmd += ["--postprocessor-args", ppa]
-        else:
-            # VideoConvertor (re-encode)
+
+        elif implicit_codec:
+            # No EncodingConfig at all — inject the bare minimum so FFmpeg
+            # produces the correct codec inside the container.
+            ppa = f"ExtractAudio+ffmpeg_o:-c:a {implicit_codec}"
+            cmd += ["--postprocessor-args", ppa]
+
+    else:
+        # Video path — only touch postprocessor-args when encoding is set.
+        if encoding is not None:
             ppa_vc = encoding.build_video_convertor_ppa()
             if ppa_vc:
                 cmd += ["--postprocessor-args", ppa_vc]
-            # Merger (mux separate streams)
+
             ppa_mg = encoding.build_merger_ppa()
             if ppa_mg:
                 cmd += ["--postprocessor-args", ppa_mg]
 
     # 8. External downloader → FFmpeg with real-time -progress output
     #
-    #    ``-progress pipe:1``  writes key=value progress to stdout (which is
-    #    our pipe), interleaved with yt-dlp's own output.
-    #    ``-loglevel error``   suppresses noisy FFmpeg banner / info lines so
-    #    we only see progress blocks and errors.
+    #    We ONLY use --external-downloader ffmpeg when the user has explicitly
+    #    requested a re-encode (encoding.video.codec or encoding.audio.codec is
+    #    set).  For plain downloads and simple remux/container-change we let
+    #    yt-dlp use its built-in downloader so we don't trigger an extra FFmpeg
+    #    pass and don't double-encode.
     #
-    #    NOTE: we do NOT set --external-downloader when extract_audio is the
-    #    only step, because yt-dlp handles that via a postprocessor, not the
-    #    downloader.  The downloader only covers the actual network fetch.
-    if not config.extract_audio:
+    #    Enabling this unconditionally caused two problems:
+    #      1. FFmpeg was invoked even when no encoding was needed (slow, wasteful).
+    #      2. A second FFmpeg pass was triggered by yt-dlp postprocessors
+    #         (embed-thumbnail, embed-subs, embed-metadata), producing a
+    #         double-encode artefact visible in the logs as out_time resetting.
+    #
+    #    NOTE: we never set --external-downloader for audio-only downloads
+    #    because yt-dlp handles extraction via a postprocessor.
+    needs_reencode = (
+        not config.extract_audio
+        and encoding is not None
+        and (
+            (encoding.video and encoding.video.codec)
+            or (encoding.audio and encoding.audio.codec)
+        )
+    )
+    if needs_reencode:
         cmd += ["--external-downloader", "ffmpeg"]
         cmd += [
             "--external-downloader-args",

@@ -183,6 +183,7 @@ class _FfmpegProgressParser:
         b = self._block
         if not b:
             return False
+        logger.debug(b)
 
         p = self.progress
         p.status = ProgressStatus.ENCODING
@@ -190,44 +191,51 @@ class _FfmpegProgressParser:
 
         if "frame" in b:
             try:
-                p.encoding_frame = int(b["frame"])
-                changed = True
+                new = int(b["frame"])
+                if new != p.encoding_frame:  # ← only if changed
+                    p.encoding_frame = new
+                    changed = True
             except ValueError:
                 pass
 
         if "fps" in b:
             try:
                 val = float(b["fps"])
-                if val > 0:
+                if val > 0 and val != p.encoding_fps:  # ← only if changed
                     p.encoding_fps = val
                     changed = True
             except ValueError:
                 pass
 
         if "bitrate" in b:
-            p.encoding_bitrate = b["bitrate"]
-            changed = True
+            new = b["bitrate"]
+            if new != p.encoding_bitrate:  # ← only if changed
+                p.encoding_bitrate = new
+                changed = True
 
         if "total_size" in b:
             try:
                 size_bytes = int(b["total_size"])
                 if size_bytes > 0:
-                    p.encoding_size = _bytes_to_human(size_bytes)
-                    changed = True
+                    human = _bytes_to_human(size_bytes)
+                    if human != p.encoding_size:  # ← only if changed
+                        p.encoding_size = human
+                        changed = True
             except ValueError:
                 pass
 
         if "speed" in b:
             raw = b["speed"].strip()
-            if raw and raw != "N/A":
+            if raw and raw != "N/A" and raw != p.encoding_speed:  # ← only if changed
                 p.encoding_speed = raw
                 changed = True
 
         if "out_time" in b:
             raw_time = b["out_time"].strip()
-            # FFmpeg sometimes emits negative out_time at the very start
             if not raw_time.startswith("-"):
-                p.encoding_time = raw_time
+                if raw_time != p.encoding_time:
+                    p.encoding_time = raw_time
+                    changed = True  # ← always fire when time moves
                 elapsed = _out_time_to_seconds(raw_time)
                 if self.total_duration > 0:
                     pct = min(round((elapsed / self.total_duration) * 100, 2), 100.0)
@@ -614,8 +622,10 @@ class AsyncYT(BinaryManager):
         try:
             info = await self.get_video_info(url)
             total_duration = float(info.duration or 0)
-        except Exception:
-            pass  # non-fatal
+        except Exception as e:
+            logger.warning(
+                "Could not fetch video duration (percentage will be unavailable): %s", e
+            )
 
         cmd = build_download_command(
             ytdlp_path=str(self.ytdlp_path),
@@ -899,16 +909,68 @@ class AsyncYT(BinaryManager):
         try:
             # --- Fetch playlist info ---
             try:
-                max_vids = playlist_config.max_videos or None
-                playlist_info = await self.get_playlist_info(url, max_videos=max_vids)  # type: ignore[arg-type]
+                # Always fetch the full playlist so video_indices and video_ids
+                # can be resolved correctly against the complete entry list.
+                # max_videos pre-limiting is applied later in the range-based path.
+                playlist_info = await self.get_playlist_info(url, max_videos=None)  # type: ignore[arg-type]
             except YtdlpPlaylistGetInfoError as exc:
                 raise PlaylistDownloadError(url, str(exc)) from exc  # type: ignore[arg-type]
 
-            # Apply start/end index slicing
+            # Apply entry filtering — priority order:
+            #   1. video_indices + video_ids  (explicit selection, union of both)
+            #   2. start_index / end_index / max_videos  (range-based)
             entries = playlist_info.entries
-            start = playlist_config.start_index - 1  # to 0-based
-            end = playlist_config.end_index  # None = all
-            entries = entries[start:end]
+            use_explicit = bool(
+                playlist_config.video_indices or playlist_config.video_ids
+            )
+
+            if use_explicit:
+                wanted_positions: set[int] = set()
+                wanted_ids: set[str] = set()
+
+                if playlist_config.video_indices:
+                    wanted_positions = set(playlist_config.video_indices)
+
+                if playlist_config.video_ids:
+                    wanted_ids = set(playlist_config.video_ids)
+
+                filtered: list[PlaylistVideoInfo] = []
+                for entry in entries:
+                    in_positions = (
+                        entry.playlist_index is not None
+                        and entry.playlist_index in wanted_positions
+                    )
+                    in_ids = bool(entry.id and entry.id in wanted_ids)
+                    if in_positions or in_ids:
+                        filtered.append(entry)
+
+                # Warn about any requested indices / ids that matched nothing
+                matched_positions = {
+                    e.playlist_index for e in filtered if e.playlist_index is not None
+                }
+                matched_ids = {e.id for e in filtered if e.id}
+                missing_pos = wanted_positions - matched_positions
+                missing_ids = wanted_ids - matched_ids
+                if missing_pos:
+                    logger.warning(
+                        "video_indices not found in playlist (playlist has %d entries): %s",
+                        len(entries),
+                        sorted(missing_pos),
+                    )
+                if missing_ids:
+                    logger.warning(
+                        "video_ids not found in playlist: %s",
+                        sorted(missing_ids),
+                    )
+
+                entries = filtered
+            else:
+                # Range-based selection (original behaviour)
+                start = playlist_config.start_index - 1  # convert to 0-based
+                end = playlist_config.end_index  # None = all
+                entries = entries[start:end]
+                if playlist_config.max_videos:
+                    entries = entries[: playlist_config.max_videos]
 
             if playlist_config.reverse:
                 entries = list(reversed(entries))

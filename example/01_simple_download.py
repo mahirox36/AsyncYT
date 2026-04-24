@@ -28,7 +28,7 @@ async def main():
     )
 
     path = await yt.download(
-        "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "https://www.youtube.com/watch?v=cBbBbdjIYLo",
         config,
         on_progress,
     )

@@ -29,7 +29,6 @@ __all__ = [
 ]
 
 
-
 class VideoInfo(BaseModel):
     """
     Video information extracted from URL.
@@ -92,7 +91,6 @@ class VideoInfo(BaseModel):
                 "upload_date": "20091025",
             }
         }
-
 
 
 class PlaylistVideoInfo(BaseModel):
@@ -274,17 +272,32 @@ class PlaylistConfig(BaseModel):
     max_videos: int = Field(
         default=0,
         ge=0,
-        description="Maximum videos to download (0 = unlimited)",
+        description="Maximum videos to download (0 = unlimited). Ignored when video_indices or video_ids is set.",
     )
     start_index: int = Field(
         default=1,
         ge=1,
-        description="1-based playlist index to start downloading from",
+        description="1-based playlist index to start downloading from. Ignored when video_indices or video_ids is set.",
     )
     end_index: Optional[int] = Field(
         default=None,
         ge=1,
-        description="1-based playlist index to stop at (inclusive)",
+        description="1-based playlist index to stop at (inclusive). Ignored when video_indices or video_ids is set.",
+    )
+    video_indices: Optional[List[int]] = Field(
+        default=None,
+        description=(
+            "Explicit list of 1-based playlist positions to download, e.g. [1, 3, 5]. "
+            "Takes priority over start_index / end_index / max_videos."
+        ),
+    )
+    video_ids: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Explicit list of video IDs (e.g. YouTube video IDs) to download from the playlist. "
+            "Takes priority over start_index / end_index / max_videos. "
+            "Combined with video_indices when both are set (union)."
+        ),
     )
     concurrency: int = Field(
         default=1,
@@ -298,12 +311,45 @@ class PlaylistConfig(BaseModel):
     )
     reverse: bool = Field(
         default=False,
-        description="Download in reverse playlist order",
+        description="Download in reverse playlist order. Applied after index/id filtering.",
     )
     write_playlist_metadata: bool = Field(
         default=False,
         description="Write a playlist.json metadata file",
     )
+
+    @field_validator("video_indices")
+    def validate_video_indices(cls, v):
+        if v is not None:
+            if len(v) == 0:
+                raise ValueError("video_indices must not be empty when provided")
+            if any(i < 1 for i in v):
+                raise ValueError("All video_indices must be >= 1 (1-based)")
+            # Deduplicate while preserving order
+            seen = set()
+            deduped = []
+            for i in v:
+                if i not in seen:
+                    seen.add(i)
+                    deduped.append(i)
+            return deduped
+        return v
+
+    @field_validator("video_ids")
+    def validate_video_ids(cls, v):
+        if v is not None:
+            if len(v) == 0:
+                raise ValueError("video_ids must not be empty when provided")
+            # Deduplicate while preserving order
+            seen = set()
+            deduped = []
+            for vid in v:
+                vid = vid.strip()
+                if vid and vid not in seen:
+                    seen.add(vid)
+                    deduped.append(vid)
+            return deduped
+        return v
 
     class Config:
         json_schema_extra = {
@@ -313,7 +359,7 @@ class PlaylistConfig(BaseModel):
                     "quality": "1080p",
                     "embed_metadata": True,
                 },
-                "max_videos": 20,
+                "video_indices": [1, 3, 7],
                 "concurrency": 2,
                 "skip_on_error": True,
             }
@@ -378,9 +424,6 @@ class PlaylistDownloadProgress(BaseModel):
 
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
-
-
-
 
 
 class DownloadConfig(BaseModel):
@@ -485,7 +528,6 @@ class DownloadConfig(BaseModel):
         }
 
 
-
 class DownloadProgress(BaseModel):
     """
     Real-time progress for a single video download.
@@ -537,7 +579,6 @@ class DownloadProgress(BaseModel):
 
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
-
 
 
 class DownloadFileProgress(BaseModel):
@@ -712,7 +753,6 @@ class PlaylistResponse(BaseModel):
 
     def __len__(self):
         return len(self.results)
-
 
 
 class HealthResponse(BaseModel):
