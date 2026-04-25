@@ -661,7 +661,7 @@ class AsyncYT(BinaryManager):
             if finalize:
                 moved = await self.finalize_download(temp_dir, output_dir, config)
                 if moved:
-                    logger.info("Download completed: %s", moved[0])
+                    logger.debug("Download completed: %s", moved[0])
                     return moved[0]
                 raise FileNotFoundError("No output file found after processing")
 

@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, List
 
+from asyncyt.basemodels import VideoFormat
+
 if TYPE_CHECKING:
     from .basemodels import DownloadConfig
 
@@ -43,11 +45,39 @@ _NATIVE_AUDIO_EXTS = frozenset({"m4a", "mp3", "ogg", "opus", "webm", "aac"})
 # FFmpeg codec required to produce each lossless/PCM container correctly.
 # Without these, FFmpeg silently defaults to opus inside the container.
 _AUDIO_FORMAT_CODEC: dict[str, str] = {
-    "wav":  "pcm_s16le",
+    "wav": "pcm_s16le",
     "flac": "flac",
     "alac": "alac",
     "aiff": "pcm_s16le",
 }
+
+_THUMB_SUPPORTED_FORMATS = frozenset(
+    {
+        "mp3",
+        "m4a",
+        "mp4",
+        "mkv",
+        "mov",
+        "flac",
+        "ogg",
+        "opus",
+    }
+)
+
+
+def _supports_thumbnail(container: str | None) -> bool:
+    """
+    Whether yt-dlp can embed thumbnails into the final output container.
+    """
+    if not container:
+        return True
+    return container in _THUMB_SUPPORTED_FORMATS
+
+
+def _default_format_for_thumbnail(audio_only: bool) -> str:
+    if audio_only:
+        return "m4a"  # best balance: metadata + thumbnail support
+    return "mp4"
 
 
 def _format_selector(config: "DownloadConfig") -> str:
@@ -82,6 +112,8 @@ def build_download_command(
     :param url: Target URL.
     :param config: DownloadConfig instance.
     """
+    config = config.model_copy(deep=True)
+
     cmd: List[str] = [ytdlp_path]
 
     # 1. FFmpeg location
@@ -95,6 +127,7 @@ def build_download_command(
     if config.custom_filename:
         template = str(Path(output_path) / config.custom_filename)
     else:
+        cmd.append("--windows-filenames")
         template = str(Path(output_path) / "%(title)s.%(ext)s")
     cmd += ["-o", template]
 
@@ -107,6 +140,28 @@ def build_download_command(
     cmd += ["--fragment-retries", str(config.fragment_retries)]
     if config.cookies_file:
         cmd += ["--cookies", config.cookies_file]
+
+    # 4.5 Default format for thumbnail embedding
+    if config.embed_thumbnail:
+        has_video_codec = bool(
+            config.encoding and config.encoding.video and config.encoding.video.codec
+        )
+
+        has_audio_codec = bool(
+            config.encoding and config.encoding.audio and config.encoding.audio.codec
+        )
+
+        if not has_video_codec and not has_audio_codec:
+            if config.extract_audio:
+                if not config.audio_format:
+                    config.audio_format = AudioFormat(
+                        _default_format_for_thumbnail(audio_only=True)
+                    )
+            else:
+                if not config.video_format:
+                    config.video_format = VideoFormat(
+                        _default_format_for_thumbnail(audio_only=False)
+                    )
 
     # 5. Audio extraction
     if config.extract_audio:
@@ -137,15 +192,12 @@ def build_download_command(
         audio_fmt = str(config.audio_format) if config.audio_format else None
         implicit_codec = _AUDIO_FORMAT_CODEC.get(audio_fmt or "")
 
+        # 1. Handle EncodingConfig (The heavy lifter)
         if encoding is not None:
-            # User supplied an EncodingConfig — use it, but patch in the
-            # implicit codec if they didn't specify one themselves.
-            if implicit_codec and (
-                encoding.audio is None or not encoding.audio.codec
-            ):
+            if implicit_codec and (encoding.audio is None or not encoding.audio.codec):
                 from .encoding import AudioEncodingConfig
-                from .enums import AudioCodec
 
+                # Patch the codec into a copy of the encoding object
                 patched_audio = (encoding.audio or AudioEncodingConfig()).model_copy(
                     update={"codec": implicit_codec}
                 )
@@ -155,11 +207,18 @@ def build_download_command(
             if ppa:
                 cmd += ["--postprocessor-args", ppa]
 
+        # 2. Fallback: No EncodingConfig, but we still need the correct codec for the container
         elif implicit_codec:
-            # No EncodingConfig at all — inject the bare minimum so FFmpeg
-            # produces the correct codec inside the container.
             ppa = f"ExtractAudio+ffmpeg_o:-c:a {implicit_codec}"
             cmd += ["--postprocessor-args", ppa]
+
+        # 3. Handle custom postprocessor_args from custom_options
+        # We do this separately so it can COEXIST with the logic above
+        custom_ppa = (config.custom_options or {}).get("postprocessor_args")
+        if custom_ppa:
+            # yt-dlp allows multiple --postprocessor-args;
+            # appending it here ensures user preferences come last (usually winning)
+            cmd += ["--postprocessor-args", str(custom_ppa)]
 
     else:
         # Video path — only touch postprocessor-args when encoding is set.
@@ -206,8 +265,15 @@ def build_download_command(
     # 9. Thumbnail
     if config.write_thumbnail:
         cmd += ["--write-thumbnail"]
+
     if config.embed_thumbnail:
-        cmd += ["--embed-thumbnail"]
+        fmt = str(config.audio_format or config.video_format)
+
+        if _supports_thumbnail(fmt):
+            cmd += ["--embed-thumbnail"]
+            cmd += ["--convert-thumbnails", "jpg"]
+        else:
+            logger.warning("Thumbnail skipped for format: %s", fmt)
 
     # 10. Subtitles
     if config.embed_subs:
@@ -246,6 +312,7 @@ def build_download_command(
             cmd += [flag, str(value)]
 
     # 16. URL (always last)
+    cmd.append("--")
     cmd.append(url)
 
     logger.debug("yt-dlp command: %s", " ".join(cmd))
