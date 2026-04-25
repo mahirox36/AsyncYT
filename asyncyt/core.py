@@ -1,28 +1,8 @@
 """
 core.py
 -------
-AsyncYT core downloader.
-
-Key improvements over the previous version
--------------------------------------------
-* **Real-time FFmpeg progress** — yt-dlp is launched with
-  ``--external-downloader ffmpeg --external-downloader-args
-  "ffmpeg:-progress pipe:1 -loglevel error"``.  FFmpeg writes its
-  key=value progress blocks directly onto stdout (pipe:1), which we
-  parse in the same line-reading loop as yt-dlp's own output, giving
-  accurate ``encoding_percentage``, ``encoding_fps``, ``encoding_speed``,
-  ``encoding_frame``, ``encoding_bitrate``, ``encoding_size``, and
-  ``encoding_time``.
-
-* **Working cancel** — on POSIX systems we kill the entire process *group*
-  (``os.killpg``); on Windows we use ``taskkill /F /T`` to kill the
-  process tree so child FFmpeg processes are also terminated.
-
-* **Native playlist support** — :class:`PlaylistInfo`, :class:`PlaylistVideoInfo`,
-  :class:`PlaylistConfig`, :class:`PlaylistDownloadProgress`, and
-  :class:`PlaylistItemResult` are first-class models.  Per-item thumbnails
-  are populated from yt-dlp's flat-playlist output.  Concurrent downloads
-  are supported via ``PlaylistConfig.concurrency``.
+AsyncYT core downloader.  Contains the main :class:`AsyncYT` class with methods for video info retrieval, single-video download, playlist download, and search.  Also includes internal helper functions and the
+``_FfmpegProgressParser`` class for parsing FFmpeg progress output.  Exceptions are defined in :mod:`exceptions.py` and data models in :mod:`basemodels.py`.  Binary management is handled by :mod:`binaries.py`.
 """
 
 from __future__ import annotations
@@ -82,7 +62,7 @@ from .binaries import BinaryManager
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AsyncYT", "Downloader"]
+__all__ = ["AsyncYT"]
 
 _IS_WINDOWS = platform.system().lower() == "windows"
 
@@ -573,20 +553,6 @@ class AsyncYT(BinaryManager):
     async def download(self, *args, **kwargs) -> Path:
         """
         Download a single video (or audio) from *url*.
-
-        Progress is streamed in real-time through *progress_callback*.  The
-        callback receives a :class:`DownloadProgress` object on every
-        meaningful change (download percentage, FFmpeg frame/fps/speed/etc.).
-
-        FFmpeg real-time fields populated in *progress_callback*:
-
-        * ``encoding_percentage`` — 0-100 based on ``out_time`` / video duration
-        * ``encoding_fps``        — frames per second
-        * ``encoding_speed``      — e.g. ``"2.50x"``
-        * ``encoding_frame``      — current frame index
-        * ``encoding_bitrate``    — e.g. ``"2048kbits/s"``
-        * ``encoding_size``       — e.g. ``"45.2MiB"``
-        * ``encoding_time``       — ``HH:MM:SS.ffffff``
 
         :param url: Video URL **or** a :class:`DownloadRequest`.
         :param config: Optional :class:`DownloadConfig`.
@@ -1141,22 +1107,3 @@ class AsyncYT(BinaryManager):
             )
         finally:
             self._playlist_cancel_events.pop(playlist_id, None)
-
-
-class DeprecatedDownloader(AsyncYT):
-    """
-    .. deprecated::
-        Use :class:`AsyncYT` instead.  Will be removed in a future release.
-    """
-
-    def __init__(self, bin_dir=None):
-        warnings.warn(
-            "Downloader is deprecated and will be removed in a future release. "
-            "Please use AsyncYT instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        super().__init__(bin_dir)
-
-
-Downloader = DeprecatedDownloader

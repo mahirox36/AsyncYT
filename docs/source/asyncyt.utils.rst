@@ -1,5 +1,5 @@
-Utils
------
+asyncyt.utils module
+====================
 
 .. automodule:: asyncyt.utils
    :members:

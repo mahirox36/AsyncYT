@@ -1,5 +1,5 @@
-Binaries
---------
+asyncyt.binaries module
+=======================
 
 .. automodule:: asyncyt.binaries
    :members:

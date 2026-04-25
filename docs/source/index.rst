@@ -1,91 +1,119 @@
-AsyncYT Documentation
-=====================
+========
+AsyncYT
+========
 
 .. image:: https://img.shields.io/pypi/v/asyncyt?style=for-the-badge
-   :target: https://pypi.org/project/asyncyt/
-   :alt: PyPI Version
+   :alt: PyPI - Version
 
 .. image:: https://img.shields.io/pypi/dm/asyncyt?style=for-the-badge
-   :target: https://pypi.org/project/asyncyt/
    :alt: Downloads
 
 .. image:: https://img.shields.io/pypi/l/asyncyt?style=for-the-badge
-   :target: https://pypi.org/project/asyncyt/
    :alt: License
 
-Welcome to the AsyncYT documentation! This site provides a comprehensive guide to using AsyncYT, a fully async, high-performance media downloader for 1000+ websites powered by yt-dlp and ffmpeg.
-
-**AsyncYT** is a fully async, high-performance media downloader for **1000+ websites** powered by `yt-dlp <https://github.com/yt-dlp/yt-dlp>`_ and ``ffmpeg``.
-
+**AsyncYT** is a fully async, high-performance media downloader for 1000+ websites powered by `yt-dlp <https://github.com/yt-dlp/yt-dlp>`_ and ``ffmpeg``.
 It comes with auto binary setup, progress tracking, playlist support, search, and clean API models using ``pydantic``.
 
-✨ **Features**
-----------------
+Features
+========
 
-* ✅ **Fully Async Architecture** – every operation is non‑blocking and ``await``‑ready
-* 🎥 **Video, Audio, and Playlist Support** – download any media you throw at it
-* 🌐 **Automatic Tool Management** – will grab ``yt-dlp`` and ``ffmpeg`` for you if not installed
-* 🎛 **Advanced FFmpeg Configuration** – control codecs, bitrates, CRF, presets, and more via strongly‑typed enums
-* 📡 **Real‑Time Progress Tracking** – both download and FFmpeg processing progress, perfect for UI updates or WebSockets
-* 🧩 **Standalone AsyncFFmpeg** – use the FFmpeg engine by itself for your own media workflows (no downloading required)
-* 🔍 **Media Inspection** – get detailed file info (resolution, duration, codecs, etc.) through ``AsyncFFmpeg.get_file_info()``
-* ⚙️ **Asynchronous FFmpeg Processing** – run FFmpeg jobs with ``AsyncFFmpeg.process()`` without blocking your app
-* 🎬 **Video & Audio Codec Enums** – pick codecs safely with built‑in enums
-* ⚡ **Presets for Performance** – quickly switch between ``ultrafast``, ``fast``, ``medium``, and more with type‑safe presets
-* 📚 **Inline Documentation** – every public method is documented and typed for easy discoverability
-* 🔗 **Codec Compatibility Helpers** – utilities to check which formats and codecs pair nicely
+* ✅ **Fully Async Architecture** – every operation is non‑blocking and ``await``‑ready.
+* 🎥 **Video, Audio, and Playlist Support** – download any media you throw at it.
+* 🌐 **Automatic Binary Management** – downloads ``yt-dlp`` and ``ffmpeg`` automatically if not found, with update support and resume-capable downloads.
+* 🎛 **Rich FFmpeg Encoding Configuration** – control video/audio codecs, CRF, bitrates, presets, pixel formats, scale, FPS, VBV, and more via the new ``EncodingConfig`` model — translated directly into yt-dlp ``--postprocessor-args`` flags, no separate FFmpeg process needed.
+* 📡 **Real‑Time Progress Tracking** – granular download *and* FFmpeg encoding progress (percentage, FPS, speed multiplier, bitrate, frame count, elapsed time), perfect for UI updates or WebSockets.
+* 🔀 **Smart Postprocessor Routing** – encoding args are automatically routed to the right yt-dlp postprocessor (``VideoConvertor``, ``ExtractAudio``, ``Merger``, ``VideoRemuxer``) depending on your config.
+* 🔁 **Resilient Downloads** – configurable retries, fragment retries, rate limiting, proxy support, cookies, and resume-capable binary downloads with exponential back-off.
+* 🔍 **Video & Playlist Info** – retrieve full metadata (title, duration, uploader, view/like count, formats, thumbnail) before downloading.
+* 🔎 **Built-in Search** – search YouTube directly and get back typed ``VideoInfo`` results.
+* 🛡 **Strongly Typed Models** – every input and output is a validated ``pydantic`` model with schema extras and field-level docs.
+* 📚 **Rich Enum Library** – type-safe enums for qualities, codecs, presets, pixel formats, audio channels, subtitle formats, progress statuses, and more.
+* 🧩 **Clean Exception Hierarchy** – specific exceptions for every failure mode (download canceled, already exists, not found, yt-dlp errors, etc.).
+* 🔗 **URL Cleaning Utilities** – normalises YouTube watch, ``youtu.be``, ``/shorts/``, and ``/embed/`` URLs automatically.
+* 📂 **Safe File Management** – unique filename generation, overwrite control, and atomic temp-dir → output-dir moves.
+* 🖥 **Cross-Platform** – Windows, macOS, and Linux; correct binaries are selected per platform automatically.
 
-📋 **Requirements**
--------------------
+Requirements
+============
 
 * Python 3.11+
 * Cross-platform – Windows, macOS, Linux
-* Dependencies: pydantic (auto-installed)
-* Optional: yt-dlp and ffmpeg (auto-downloaded if not present)
+* Optional: ``yt-dlp`` and ``ffmpeg`` (auto-downloaded if not present)
 
-📦 **Installation**
--------------------
+Installation
+============
 
 .. code-block:: bash
 
    pip install asyncyt
 
-🚀 **Quick Start**
-------------------
+Quick Start
+===========
 
 .. code-block:: python
 
    import asyncio
    from asyncyt import AsyncYT, DownloadConfig, Quality
+   from asyncyt.exceptions import AsyncYTBase
 
    async def main():
-       config = DownloadConfig(quality=Quality.HD_720P)
        downloader = AsyncYT()
-       
-       try:
-           await downloader.setup_binaries()
-           info = await downloader.get_video_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-           print(f"Downloading: {info.title}")
-           
-           filename = await downloader.download(info.url, config)
-           print(f"Downloaded to: {filename}")
-           
-       except AsyncYTBase as e:  # AsyncYTBase is the base for all exceptions in this library
-           print(f"Error: {e}")
+       await downloader.setup_binaries()
+
+       config = DownloadConfig(quality=Quality.HD_720P)
+
+       info = await downloader.get_video_info("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+       print(f"Downloading: {info.title}")
+
+       filename = await downloader.download(info.url, config)
+       print(f"Downloaded to: {filename}")
 
    asyncio.run(main())
 
-🌐 **Supported Sites**
-----------------------
+Encoding Configuration
+======================
+
+AsyncYT exposes a rich ``EncodingConfig`` model that gives you full control over how FFmpeg processes your media. It maps directly onto yt-dlp's ``--postprocessor-args`` / ``--ppa`` flags — no extra FFmpeg invocations.
+
+.. code-block:: python
+
+   from asyncyt import AsyncYT, DownloadConfig, Quality, VideoFormat
+   from asyncyt.encoding import EncodingConfig, VideoEncodingConfig, AudioEncodingConfig
+   from asyncyt.enums import VideoCodec, AudioCodec, Preset, PixelFormat
+
+   config = DownloadConfig(
+       quality=Quality.HD_1080P,
+       video_format=VideoFormat.MP4,
+       embed_metadata=True,
+       embed_thumbnail=True,
+       encoding=EncodingConfig(
+           video=VideoEncodingConfig(
+               codec=VideoCodec.H264,
+               crf=20,
+               preset=Preset.SLOW,
+               pixel_format=PixelFormat.YUV420P,
+           ),
+           audio=AudioEncodingConfig(
+               codec=AudioCodec.AAC,
+               bitrate="192k",
+           ),
+           overwrite=True,
+       ),
+   )
+
+Supported Sites
+===============
 
 AsyncYT supports **1000+ websites** through yt-dlp, including:
 
 * YouTube, YouTube Music
-* Twitch, TikTok, Instagram  
+* Twitch, TikTok, Instagram
 * Twitter, Reddit, Facebook
 * Vimeo, Dailymotion, and many more
 
-`See full list of supported sites → <https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md>`_
+`See full list of supported sites <https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md>`_
+
+---
 
 Contents:
 ---------
@@ -93,10 +121,12 @@ Contents:
 .. toctree::
    :maxdepth: 2
 
-   core
-   basemodels
-   binaries
-   enums
-   exceptions
-   utils
+   asyncyt.core
+   asyncyt.basemodels
+   asyncyt.binaries
+   asyncyt.builder
+   asyncyt.encoding
+   asyncyt.enums
+   asyncyt.exceptions
+   asyncyt.utils
    genindex

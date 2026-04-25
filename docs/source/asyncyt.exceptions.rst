@@ -1,5 +1,5 @@
-Exceptions
-----------
+asyncyt.exceptions module
+=========================
 
 .. automodule:: asyncyt.exceptions
    :members:

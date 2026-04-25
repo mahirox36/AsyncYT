@@ -236,19 +236,6 @@ class EncodingConfig(BaseModel):
     :param overwrite: Pass ``-y`` to FFmpeg (overwrite existing files).
     :param extra_global_args: Raw args added before input inside the ``--ppa`` value,
                               e.g. ``["-threads", "4"]``.
-
-    **How it maps to yt-dlp flags**
-
-    AsyncYT translates ``EncodingConfig`` into yt-dlp CLI flags:
-
-    * ``--recode-video FORMAT`` — when a target container is set (inferred from
-      ``DownloadConfig.video_format``).
-    * ``--postprocessor-args "VideoConvertor+ffmpeg_o:-c:v … -c:a … -crf …"``
-      — all encoding args are injected via the ``VideoConvertor`` postprocessor
-      so they apply only during the re-encode step, not the merge step.
-    * ``--postprocessor-args "ExtractAudio+ffmpeg_o:-c:a …"`` — similarly for
-      audio-only downloads.
-    * ``--postprocessor-args "Merger+ffmpeg_i1:-v quiet"`` etc. for other PPs.
     """
 
     video: Annotated[

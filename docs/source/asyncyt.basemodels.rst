@@ -1,5 +1,5 @@
-Basemodels
-----------
+asyncyt.basemodels module
+=========================
 
 .. automodule:: asyncyt.basemodels
    :members:

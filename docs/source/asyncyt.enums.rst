@@ -1,5 +1,5 @@
-Enums
------
+asyncyt.enums module
+====================
 
 .. automodule:: asyncyt.enums
    :members:

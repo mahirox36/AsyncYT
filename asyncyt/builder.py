@@ -2,18 +2,6 @@
 builder.py
 ------------------
 Builds yt-dlp CLI commands from a DownloadConfig.
-
-FFmpeg progress strategy
-------------------------
-We use yt-dlp's ``--external-downloader ffmpeg`` with the args
-``-progress pipe:1 -loglevel error`` so that FFmpeg writes its key=value
-progress blocks directly to yt-dlp's stdout (pipe:1).  AsyncYT's
-``_read_process_output`` loop then picks them up in real-time without
-any temp-file gymnastics.
-
-This replaces the previous ``--postprocessor-args`` / temp-file approach,
-which only worked during the re-encode step.  The external-downloader
-approach captures progress for *all* phases (download, merge, remux).
 """
 
 from __future__ import annotations
