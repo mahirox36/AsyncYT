@@ -831,7 +831,8 @@ class AsyncYT(BinaryManager):
         Supports concurrent downloads via ``PlaylistConfig.concurrency``.
         Progress is reported through *progress_callback* with a
         :class:`PlaylistDownloadProgress` that includes both the overall
-        playlist state and the current video's :class:`DownloadProgress`.
+        playlist state and per-video :class:`DownloadProgress` for every
+        active download.
 
         :param url: Playlist URL (required when *request* is not given).
         :param playlist_config: Playlist-level configuration.
@@ -856,15 +857,16 @@ class AsyncYT(BinaryManager):
         item_config = playlist_config.item_config or DownloadConfig()
         playlist_id = get_id(url, item_config)  # type: ignore[arg-type]
 
-        # Create cancellation event
         cancel_event = asyncio.Event()
         self._playlist_cancel_events[playlist_id] = cancel_event
 
-        # Live progress object
         pl_progress = PlaylistDownloadProgress(
             playlist_id=playlist_id,
             status=PlaylistStatus.FETCHING_INFO,
         )
+
+        # Mutex so concurrent _download_one tasks don't race on pl_progress mutations.
+        _progress_lock = asyncio.Lock()
 
         async def _emit() -> None:
             if progress_callback:
@@ -875,16 +877,11 @@ class AsyncYT(BinaryManager):
         try:
             # --- Fetch playlist info ---
             try:
-                # Always fetch the full playlist so video_indices and video_ids
-                # can be resolved correctly against the complete entry list.
-                # max_videos pre-limiting is applied later in the range-based path.
                 playlist_info = await self.get_playlist_info(url, max_videos=None)  # type: ignore[arg-type]
             except YtdlpPlaylistGetInfoError as exc:
                 raise PlaylistDownloadError(url, str(exc)) from exc  # type: ignore[arg-type]
 
-            # Apply entry filtering — priority order:
-            #   1. video_indices + video_ids  (explicit selection, union of both)
-            #   2. start_index / end_index / max_videos  (range-based)
+            # --- Entry filtering (unchanged logic) ---
             entries = playlist_info.entries
             use_explicit = bool(
                 playlist_config.video_indices or playlist_config.video_ids
@@ -896,7 +893,6 @@ class AsyncYT(BinaryManager):
 
                 if playlist_config.video_indices:
                     wanted_positions = set(playlist_config.video_indices)
-
                 if playlist_config.video_ids:
                     wanted_ids = set(playlist_config.video_ids)
 
@@ -910,30 +906,25 @@ class AsyncYT(BinaryManager):
                     if in_positions or in_ids:
                         filtered.append(entry)
 
-                # Warn about any requested indices / ids that matched nothing
                 matched_positions = {
                     e.playlist_index for e in filtered if e.playlist_index is not None
                 }
                 matched_ids = {e.id for e in filtered if e.id}
-                missing_pos = wanted_positions - matched_positions
-                missing_ids = wanted_ids - matched_ids
-                if missing_pos:
+                if missing_pos := wanted_positions - matched_positions:
                     logger.warning(
                         "video_indices not found in playlist (playlist has %d entries): %s",
                         len(entries),
                         sorted(missing_pos),
                     )
-                if missing_ids:
+                if missing_ids := wanted_ids - matched_ids:
                     logger.warning(
-                        "video_ids not found in playlist: %s",
-                        sorted(missing_ids),
+                        "video_ids not found in playlist: %s", sorted(missing_ids)
                     )
 
                 entries = filtered
             else:
-                # Range-based selection (original behaviour)
-                start = playlist_config.start_index - 1  # convert to 0-based
-                end = playlist_config.end_index  # None = all
+                start = playlist_config.start_index - 1
+                end = playlist_config.end_index
                 entries = entries[start:end]
                 if playlist_config.max_videos:
                     entries = entries[: playlist_config.max_videos]
@@ -961,48 +952,55 @@ class AsyncYT(BinaryManager):
                             error="Cancelled",
                         )
 
-                    # Per-video progress callback — update pl_progress and re-emit
-                    async def _video_cb(vp: DownloadProgress) -> None:
-                        pl_progress.current_video_progress = vp
-                        if progress_callback:
-                            await call_callback(progress_callback, pl_progress)
+                    video_url = entry.url
 
-                    pl_progress.current_index = entry.playlist_index or 0
-                    pl_progress.current_video = entry
-                    pl_progress.current_video_progress = None
+                    # Register this video as active.
+                    async with _progress_lock:
+                        pl_progress.active_video[video_url] = entry
+                        pl_progress.active_downloads_progress[video_url] = None  # type: ignore[assignment]
+                        pl_progress.current_index = entry.playlist_index or 0
                     await _emit()
 
+                    async def _video_cb(vp: DownloadProgress) -> None:
+                        async with _progress_lock:
+                            pl_progress.active_downloads_progress[video_url] = vp
+                        await _emit()
+                    
                     try:
                         filepath = await self.download(
-                            entry.url,
-                            item_config,
-                            _video_cb,
+                            video_url, item_config, _video_cb
                         )
-                        pl_progress.completed_videos += 1
-                        pl_progress._recalculate_percentage()
+
+                        async with _progress_lock:
+                            pl_progress.completed_videos += 1
+                            pl_progress._recalculate_percentage()
+
                         result = PlaylistItemResult(
                             index=entry.playlist_index or 0,
                             video_info=entry,
                             success=True,
                             filepath=str(filepath),
                         )
+
                     except DownloadGotCanceledError:
-                        pl_progress.failed_videos += 1
-                        pl_progress._recalculate_percentage()
+                        async with _progress_lock:
+                            pl_progress.failed_videos += 1
+                            pl_progress._recalculate_percentage()
+
                         result = PlaylistItemResult(
                             index=entry.playlist_index or 0,
                             video_info=entry,
                             success=False,
                             error="Cancelled",
                         )
+
                     except Exception as exc:
-                        logger.warning(
-                            "Playlist item %s failed: %s",
-                            entry.url,
-                            exc,
-                        )
-                        pl_progress.failed_videos += 1
-                        pl_progress._recalculate_percentage()
+                        logger.warning("Playlist item %s failed: %s", video_url, exc)
+
+                        async with _progress_lock:
+                            pl_progress.failed_videos += 1
+                            pl_progress._recalculate_percentage()
+
                         result = PlaylistItemResult(
                             index=entry.playlist_index or 0,
                             video_info=entry,
@@ -1012,13 +1010,17 @@ class AsyncYT(BinaryManager):
                         if not playlist_config.skip_on_error:
                             raise
 
-                    pl_progress.results.append(result)
+                    finally:
+                        async with _progress_lock:
+                            pl_progress.active_video.pop(video_url, None)
+                            pl_progress.active_downloads_progress.pop(video_url, None)
+                            pl_progress.results.append(result) # type: ignore
+
                     await _emit()
-                    return result
+                    return result # type: ignore
 
             # --- Run downloads ---
             if playlist_config.concurrency == 1:
-                # Sequential — simpler, friendlier for rate limits
                 for entry in entries:
                     if cancel_event.is_set():
                         break
@@ -1027,7 +1029,6 @@ class AsyncYT(BinaryManager):
                     if result.filepath:
                         downloaded_files.append(result.filepath)
             else:
-                # Concurrent
                 tasks = [asyncio.create_task(_download_one(e)) for e in entries]
                 try:
                     done_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1046,7 +1047,6 @@ class AsyncYT(BinaryManager):
                         t.cancel()
                     raise
 
-            # Detect if cancelled
             was_cancelled = cancel_event.is_set()
             success = pl_progress.completed_videos > 0
 

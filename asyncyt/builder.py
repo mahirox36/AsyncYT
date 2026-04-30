@@ -138,6 +138,7 @@ def build_download_command(
         cmd += ["-r", config.rate_limit]
     cmd += ["--retries", str(config.retries)]
     cmd += ["--fragment-retries", str(config.fragment_retries)]
+    cmd += ["--concurrent-fragments", str(config.concurrent_fragments)]
     if config.cookies_file:
         cmd += ["--cookies", config.cookies_file]
 

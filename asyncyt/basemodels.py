@@ -387,24 +387,23 @@ class PlaylistItemResult(BaseModel):
 class PlaylistDownloadProgress(BaseModel):
     """
     Real-time progress for a full playlist download operation.
-
-    The ``current_video_progress`` field mirrors a normal
-    :class:`DownloadProgress` so callers can render per-video progress bars
-    alongside the overall playlist progress.
-
+ 
+    ``active_video`` and ``active_downloads_progress`` are keyed by video URL,
+    allowing concurrent downloads to each report independently.
+ 
     :param playlist_id: Unique ID for this playlist download session.
     :param playlist_info: Full playlist metadata (available after fetch stage).
     :param status: High-level playlist status.
     :param total_videos: Total number of videos selected for download.
     :param completed_videos: Number of successfully downloaded videos.
     :param failed_videos: Number of failed videos so far.
-    :param current_index: 1-based index of the video currently being processed.
-    :param current_video: Metadata of the video currently being downloaded.
-    :param current_video_progress: Live :class:`DownloadProgress` for the active video.
+    :param current_index: 1-based index of the *last* video to start downloading.
+    :param active_video: Mapping of active video URLs → :class:`PlaylistVideoInfo`.
+    :param active_downloads_progress: Mapping of active video URLs → :class:`DownloadProgress`.
     :param overall_percentage: Overall playlist completion 0–100.
     :param results: Completed item results accumulated so far.
     """
-
+ 
     playlist_id: str
     playlist_info: Optional[PlaylistInfo] = None
     status: PlaylistStatus = PlaylistStatus.PENDING
@@ -412,18 +411,25 @@ class PlaylistDownloadProgress(BaseModel):
     completed_videos: int = 0
     failed_videos: int = 0
     current_index: int = 0
-    current_video: Optional[PlaylistVideoInfo] = None
-    current_video_progress: Optional["DownloadProgress"] = None
+    active_video: Dict[str, PlaylistVideoInfo] = Field(
+        default_factory=dict,
+        description="Mapping of active video URLs to their PlaylistVideoInfo",
+    )
+    active_downloads_progress: Dict[str, DownloadProgress] = Field(
+        default_factory=dict,
+        description="Mapping of active video URLs to their live DownloadProgress",
+    )
     overall_percentage: Annotated[float, Field(ge=0.0, le=100.0)] = 0.0
     results: List[PlaylistItemResult] = Field(default_factory=list)
-
+ 
     def _recalculate_percentage(self) -> None:
         if self.total_videos > 0:
             done = self.completed_videos + self.failed_videos
             self.overall_percentage = round((done / self.total_videos) * 100, 1)
-
+ 
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
+
 
 
 class DownloadConfig(BaseModel):
@@ -483,6 +489,9 @@ class DownloadConfig(BaseModel):
     retries: int = Field(default=3, ge=0, le=10, description="Number of retries")
     fragment_retries: int = Field(
         default=3, ge=0, le=10, description="Fragment retries"
+    )
+    concurrent_fragments: int = Field(
+        default=5, ge=1, le=20, description="Number of concurrent fragment downloads"
     )
     custom_options: Dict[str, Any] = Field(
         default_factory=dict, description="Custom yt-dlp options"
