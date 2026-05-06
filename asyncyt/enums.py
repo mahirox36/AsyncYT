@@ -7,12 +7,10 @@ __all__ = [
     "VideoCodec",
     "AudioCodec",
     "Preset",
-    "InputType",
     "ProgressStatus",
     "TuneOption",
     "PixelFormat",
     "AudioChannels",
-    "SubtitleFormat",
     "PlaylistStatus",
 ]
 
@@ -181,25 +179,6 @@ class AudioChannels(StrEnum):
     STEREO = "2"
     SURROUND_5_1 = "6"
     SURROUND_7_1 = "8"
-
-
-class SubtitleFormat(StrEnum):
-    """Subtitle conversion formats supported by yt-dlp"""
-
-    SRT = "srt"
-    VTT = "vtt"
-    ASS = "ass"
-    LRC = "lrc"
-
-
-class InputType(StrEnum):
-    """Input file types"""
-
-    VIDEO = "video"
-    AUDIO = "audio"
-    SUBTITLE = "subtitle"
-    THUMBNAIL = "thumbnail"
-    IMAGE = "image"
 
 
 class ProgressStatus(StrEnum):

@@ -7,6 +7,7 @@ Rich encoding configuration models for AsyncYT.
 from __future__ import annotations
 
 from typing import Annotated, List, Optional, Union
+
 from pydantic import BaseModel, Field, model_validator
 
 from .enums import (

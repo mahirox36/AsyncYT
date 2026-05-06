@@ -120,8 +120,7 @@ class PlaylistCancelledError(DownloaderBase):
 
     def __init__(self, playlist_id: str, completed: int, total: int):
         message = (
-            f"Playlist '{playlist_id}' was cancelled after "
-            f"{completed}/{total} videos."
+            f"Playlist '{playlist_id}' was cancelled after {completed}/{total} videos."
         )
         self.playlist_id = playlist_id
         self.completed = completed

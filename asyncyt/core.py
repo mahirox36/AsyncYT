@@ -15,11 +15,10 @@ import re
 import shutil
 import signal
 import tempfile
-import warnings
+from collections.abc import Callable as CallableABC
 from json import loads
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, overload
-from collections.abc import Callable as CallableABC
 
 from .basemodels import (
     DownloadConfig,
@@ -37,6 +36,7 @@ from .basemodels import (
     SearchResponse,
     VideoInfo,
 )
+from .binaries import BinaryManager
 from .builder import build_download_command
 from .enums import PlaylistStatus, ProgressStatus
 from .exceptions import (
@@ -58,7 +58,6 @@ from .utils import (
     get_unique_filename,
     get_unique_path,
 )
-from .binaries import BinaryManager
 
 logger = logging.getLogger(__name__)
 
@@ -564,8 +563,8 @@ class AsyncYT(BinaryManager):
         :raises DownloadGotCanceledError: :meth:`cancel` was called.
         :raises FileNotFoundError: FFmpeg not found, or no output file produced.
         """
-        url, config, progress_callback, finalize = self._get_config(*args, **kwargs)
-        config = config or DownloadConfig()
+        url, pre_config, progress_callback, finalize = self._get_config(*args, **kwargs)
+        config: DownloadConfig = pre_config or DownloadConfig()
         url = clean_youtube_url(url)
         id_ = get_id(url, config)
 
@@ -965,7 +964,7 @@ class AsyncYT(BinaryManager):
                         async with _progress_lock:
                             pl_progress.active_downloads_progress[video_url] = vp
                         await _emit()
-                    
+
                     try:
                         filepath = await self.download(
                             video_url, item_config, _video_cb
@@ -1014,10 +1013,10 @@ class AsyncYT(BinaryManager):
                         async with _progress_lock:
                             pl_progress.active_video.pop(video_url, None)
                             pl_progress.active_downloads_progress.pop(video_url, None)
-                            pl_progress.results.append(result) # type: ignore
+                            pl_progress.results.append(result)  # type: ignore
 
                     await _emit()
-                    return result # type: ignore
+                    return result  # type: ignore
 
             # --- Run downloads ---
             if playlist_config.concurrency == 1:
@@ -1053,7 +1052,9 @@ class AsyncYT(BinaryManager):
             pl_progress.status = (
                 PlaylistStatus.CANCELLED
                 if was_cancelled
-                else PlaylistStatus.COMPLETED if success else PlaylistStatus.FAILED
+                else PlaylistStatus.COMPLETED
+                if success
+                else PlaylistStatus.FAILED
             )
             pl_progress.overall_percentage = (
                 round(pl_progress.completed_videos / len(entries) * 100, 1)

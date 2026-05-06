@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 from asyncyt.basemodels import VideoFormat
 
@@ -36,14 +36,24 @@ _QUALITY_FORMAT: dict[str, str] = {
     Quality.UHD_8K: "bestvideo[height<=4320]+bestaudio/best[height<=4320]/best",
 }
 
-# Formats that actually exist as source streams on platforms like YouTube.
-# Everything else is a *transcoded* output format — we must not filter by
-# ext in the -f selector or yt-dlp will find no matching stream and fall
-# back to bestaudio, which is usually opus/webm regardless of what you asked for.
+_QUALITY_FORMAT_BASE: dict[str, str] = {
+    Quality.BEST: "bestvideo*[ext={format}]+bestaudio/bestvideo*+bestaudio/best",
+    Quality.WORST: "worstvideo*[ext={format}]+worstaudio/worstvideo*+worstaudio/worst",
+    Quality.AUDIO_ONLY: "bestaudio/best",
+    Quality.VIDEO_ONLY: "bestvideo[ext={format}]/bestvideo/best",
+    Quality.LOW_144P: "bestvideo[ext={format}][height<=144]+bestaudio/bestvideo[height<=144]+bestaudio/best[height<=144]/best",
+    Quality.LOW_240P: "bestvideo[ext={format}][height<=240]+bestaudio/bestvideo[height<=240]+bestaudio/best[height<=240]/best",
+    Quality.SD_480P: "bestvideo[ext={format}][height<=480]+bestaudio/bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+    Quality.HD_720P: "bestvideo[ext={format}][height<=720]+bestaudio/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+    Quality.HD_1080P: "bestvideo[ext={format}][height<=1080]+bestaudio/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+    Quality.HD_1440P: "bestvideo[ext={format}][height<=1440]+bestaudio/bestvideo[height<=1440]+bestaudio/best[height<=1440]/best",
+    Quality.UHD_4K: "bestvideo[ext={format}][height<=2160]+bestaudio/bestvideo[height<=2160]+bestaudio/best[height<=2160]/best",
+    Quality.UHD_8K: "bestvideo[ext={format}][height<=4320]+bestaudio/bestvideo[height<=4320]+bestaudio/best[height<=4320]/best",
+}
+
+
 _NATIVE_AUDIO_EXTS = frozenset({"m4a", "mp3", "ogg", "opus", "webm", "aac"})
 
-# FFmpeg codec required to produce each lossless/PCM container correctly.
-# Without these, FFmpeg silently defaults to opus inside the container.
 _AUDIO_FORMAT_CODEC: dict[str, str] = {
     "wav": "pcm_s16le",
     "flac": "flac",
@@ -85,12 +95,15 @@ def _format_selector(config: "DownloadConfig") -> str:
     if config.extract_audio:
         if config.audio_format and str(config.audio_format) != AudioFormat.COPY:
             fmt = str(config.audio_format)
-            # Only restrict by ext when that format actually exists as a
-            # source stream; otherwise just fetch bestaudio and let
-            # --audio-format handle the transcode.
             if fmt in _NATIVE_AUDIO_EXTS:
                 return f"bestaudio[ext={fmt}]/bestaudio/best"
         return "bestaudio/best"
+
+    if config.video_format and str(config.video_format) != "copy":
+        fmt = str(config.video_format)
+        template = _QUALITY_FORMAT_BASE.get(quality, _QUALITY_FORMAT_BASE[Quality.BEST])
+        return template.format(format=fmt)
+
     return _QUALITY_FORMAT.get(quality, "bestvideo*+bestaudio/best")
 
 
@@ -99,6 +112,7 @@ def build_download_command(
     ffmpeg_path: str,
     url: str,
     config: "DownloadConfig",
+    nodejs_path: Optional[str] = None,
 ) -> List[str]:
     """
     Build a complete yt-dlp CLI command.
@@ -115,6 +129,10 @@ def build_download_command(
     config = config.model_copy(deep=True)
 
     cmd: List[str] = [ytdlp_path]
+
+    # 0. Node.js location
+    if nodejs_path:
+        cmd += [f"--js-runtimes node:{nodejs_path}"]
 
     # 1. FFmpeg location
     cmd += ["--ffmpeg-location", ffmpeg_path]
@@ -184,11 +202,6 @@ def build_download_command(
             cmd += ["--remux-video", vfmt]
 
     # 7. Custom encoding via --postprocessor-args
-    #
-    #    For audio formats that require a specific FFmpeg codec (wav, flac,
-    #    alac, aiff), we inject -c:a so FFmpeg doesn't silently default to
-    #    opus.  The user's explicit AudioEncodingConfig.codec always wins;
-    #    we only inject the implicit codec when none is set.
     if config.extract_audio:
         audio_fmt = str(config.audio_format) if config.audio_format else None
         implicit_codec = _AUDIO_FORMAT_CODEC.get(audio_fmt or "")
@@ -214,15 +227,11 @@ def build_download_command(
             cmd += ["--postprocessor-args", ppa]
 
         # 3. Handle custom postprocessor_args from custom_options
-        # We do this separately so it can COEXIST with the logic above
         custom_ppa = (config.custom_options or {}).get("postprocessor_args")
         if custom_ppa:
-            # yt-dlp allows multiple --postprocessor-args;
-            # appending it here ensures user preferences come last (usually winning)
             cmd += ["--postprocessor-args", str(custom_ppa)]
 
     else:
-        # Video path — only touch postprocessor-args when encoding is set.
         if encoding is not None:
             ppa_vc = encoding.build_video_convertor_ppa()
             if ppa_vc:
@@ -233,21 +242,6 @@ def build_download_command(
                 cmd += ["--postprocessor-args", ppa_mg]
 
     # 8. External downloader → FFmpeg with real-time -progress output
-    #
-    #    We ONLY use --external-downloader ffmpeg when the user has explicitly
-    #    requested a re-encode (encoding.video.codec or encoding.audio.codec is
-    #    set).  For plain downloads and simple remux/container-change we let
-    #    yt-dlp use its built-in downloader so we don't trigger an extra FFmpeg
-    #    pass and don't double-encode.
-    #
-    #    Enabling this unconditionally caused two problems:
-    #      1. FFmpeg was invoked even when no encoding was needed (slow, wasteful).
-    #      2. A second FFmpeg pass was triggered by yt-dlp postprocessors
-    #         (embed-thumbnail, embed-subs, embed-metadata), producing a
-    #         double-encode artefact visible in the logs as out_time resetting.
-    #
-    #    NOTE: we never set --external-downloader for audio-only downloads
-    #    because yt-dlp handles extraction via a postprocessor.
     needs_reencode = (
         not config.extract_audio
         and encoding is not None

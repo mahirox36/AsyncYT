@@ -1,8 +1,16 @@
 from pathlib import Path
 from typing import Annotated, Any, Dict, Iterator, List, Optional
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .enums import *
+from asyncyt.enums import (
+    AudioFormat,
+    PlaylistStatus,
+    ProgressStatus,
+    Quality,
+    VideoFormat,
+)
+
 from .encoding import EncodingConfig
 
 __all__ = [
@@ -23,9 +31,6 @@ __all__ = [
     "DownloadFileProgress",
     "SetupProgress",
     "HealthResponse",
-    "InputFile",
-    "StreamInfo",
-    "MediaInfo",
 ]
 
 
@@ -387,10 +392,10 @@ class PlaylistItemResult(BaseModel):
 class PlaylistDownloadProgress(BaseModel):
     """
     Real-time progress for a full playlist download operation.
- 
+
     ``active_video`` and ``active_downloads_progress`` are keyed by video URL,
     allowing concurrent downloads to each report independently.
- 
+
     :param playlist_id: Unique ID for this playlist download session.
     :param playlist_info: Full playlist metadata (available after fetch stage).
     :param status: High-level playlist status.
@@ -403,7 +408,7 @@ class PlaylistDownloadProgress(BaseModel):
     :param overall_percentage: Overall playlist completion 0–100.
     :param results: Completed item results accumulated so far.
     """
- 
+
     playlist_id: str
     playlist_info: Optional[PlaylistInfo] = None
     status: PlaylistStatus = PlaylistStatus.PENDING
@@ -415,21 +420,20 @@ class PlaylistDownloadProgress(BaseModel):
         default_factory=dict,
         description="Mapping of active video URLs to their PlaylistVideoInfo",
     )
-    active_downloads_progress: Dict[str, DownloadProgress] = Field(
+    active_downloads_progress: Dict[str, "DownloadProgress"] = Field(
         default_factory=dict,
         description="Mapping of active video URLs to their live DownloadProgress",
     )
     overall_percentage: Annotated[float, Field(ge=0.0, le=100.0)] = 0.0
     results: List[PlaylistItemResult] = Field(default_factory=list)
- 
+
     def _recalculate_percentage(self) -> None:
         if self.total_videos > 0:
             done = self.completed_videos + self.failed_videos
             self.overall_percentage = round((done / self.total_videos) * 100, 1)
- 
+
     class Config:
         json_encoders = {float: lambda v: round(v, 2)}
-
 
 
 class DownloadConfig(BaseModel):
@@ -773,48 +777,3 @@ class HealthResponse(BaseModel):
     version: str = "1.0.0"
     binaries_path: Optional[str] = None
     error: Optional[str] = None
-
-
-class InputFile(BaseModel):
-    """Single input file configuration."""
-
-    path: str = Field(description="Path to input file")
-    type: InputType = Field(description="Type of input file")
-    options: List[str] = Field(
-        default_factory=list, description="Input-specific options"
-    )
-    stream_index: Optional[int] = Field(
-        default=None, description="Specific stream index to use"
-    )
-
-    @field_validator("path")
-    def validate_path_exists(cls, v):
-        if not Path(v).exists():
-            raise ValueError(f"Input file does not exist: {v}")
-        return v
-
-
-class StreamInfo(BaseModel):
-    """Stream information for media files."""
-
-    index: int
-    codec_type: str
-    codec_name: Optional[str] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    bit_rate: Optional[int] = None
-    sample_rate: Optional[int] = None
-    channels: Optional[int] = None
-    language: Optional[str] = None
-
-
-class MediaInfo(BaseModel):
-    """Media file information."""
-
-    filename: str
-    format_name: str
-    format_long_name: str
-    duration: float
-    size: int
-    bit_rate: int
-    streams: List[StreamInfo]
