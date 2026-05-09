@@ -8,22 +8,12 @@ if TYPE_CHECKING:
     from .basemodels import DownloadConfig
 
 __all__ = [
-    "CMD",
-    "OUTPUT",
     "call_callback",
     "get_unique_filename",
     "get_id",
     "get_unique_path",
     "clean_youtube_url",
 ]
-
-
-class CMD(str):
-    pass
-
-
-class OUTPUT(str):
-    pass
 
 
 async def call_callback(callback, *args, **kwargs):

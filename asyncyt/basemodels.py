@@ -703,7 +703,7 @@ class DownloadResponse(BaseModel):
     filename: Optional[str] = None
     video_info: Optional[VideoInfo] = None
     error: Optional[str] = None
-    cmd: Optional[str] = None
+    cmd: Optional[List[str]] = None
     output: Optional[str] = None
 
     class Config:
@@ -717,7 +717,7 @@ class DownloadResponse(BaseModel):
                     "duration": 212,
                     "uploader": "RickAstleyVEVO",
                 },
-                "cmd": "yt-dlp ...",
+                "cmd": ["yt-dlp", "..."],
                 "output": "[download] Destination: ....\n[download] 30% of ....",
             }
         }

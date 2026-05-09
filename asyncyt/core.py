@@ -63,8 +63,6 @@ from .exceptions import (
     YtdlpSearchError,
 )
 from .utils import (
-    CMD,
-    OUTPUT,
     call_callback,
     clean_youtube_url,
     get_id,
@@ -582,7 +580,7 @@ class AsyncYT(BinaryManager):
         ] = None,
         finalize: bool = True,
         include_cmd: Literal[True] = True,
-    ) -> Tuple[Path, CMD, OUTPUT]: ...
+    ) -> Tuple[Path, List[str], str]: ...
 
     @overload
     async def download(
@@ -593,9 +591,9 @@ class AsyncYT(BinaryManager):
         ] = None,
         finalize: bool = True,
         include_cmd: Literal[True] = True,
-    ) -> Tuple[Path, CMD, OUTPUT]: ...
+    ) -> Tuple[Path, List[str], str]: ...
 
-    async def download(self, *args, **kwargs) -> Path | Tuple[Path, CMD, OUTPUT]:
+    async def download(self, *args, **kwargs) -> Path | Tuple[Path, List[str], str]:
         """
         Download a single video or audio resource.
 
@@ -617,8 +615,8 @@ class AsyncYT(BinaryManager):
             - If ``include_cmd`` is ``False``: The :class:`Path` to the downloaded file.
             - If ``include_cmd`` is ``True``: A :class:`Tuple` containing:
                 1. :class:`Path`: The path to the downloaded file.
-                2. :class:`CMD`: The full CLI command string executed. (str)
-                3. :class:`OUTPUT`: The raw stdout/stderr output from the process. (str)
+                2. :class:`List[str]`: The full CLI command list executed.
+                3. :class:`str`: The raw stdout/stderr output from the process.
 
         :raises DownloadAlreadyExistsError: If the same download is already in progress.
         :raises YtdlpDownloadError: If yt-dlp returns a non-zero exit code.
@@ -725,15 +723,16 @@ class AsyncYT(BinaryManager):
                 moved = await self.finalize_download(temp_dir, output_dir, config)
                 if moved:
                     logger.debug("Download completed: %s", moved[0])
-                    return moved[0]
+                    if not include_cmd:
+                        return moved[0]
+                    return (moved[0], cmd, "\n".join(output))
                 raise FileNotFoundError("No output file found after processing")
 
             files = [f for f in temp_path.iterdir() if f.is_file()]
             if files:
-                response = (
-                    files[0] if include_cmd else (files[0], CMD(cmd), OUTPUT(output))
-                )
-                return response
+                if not include_cmd:
+                    return files[0]
+                return (files[0], cmd, "\n".join(output))
             raise FileNotFoundError("No output file found in temp dir")
 
         except asyncio.CancelledError:
