@@ -703,6 +703,8 @@ class DownloadResponse(BaseModel):
     filename: Optional[str] = None
     video_info: Optional[VideoInfo] = None
     error: Optional[str] = None
+    cmd: Optional[str] = None
+    output: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -715,6 +717,8 @@ class DownloadResponse(BaseModel):
                     "duration": 212,
                     "uploader": "RickAstleyVEVO",
                 },
+                "cmd": "yt-dlp ...",
+                "output": "[download] Destination: ....\n[download] 30% of ....",
             }
         }
 

@@ -198,6 +198,9 @@ def build_download_command(
         )
         if needs_reencode:
             cmd += ["--recode-video", vfmt]
+
+            intermediate = "mkv" if vfmt != "mkv" else "mp4"
+            cmd += ["--merge-output-format", intermediate]
         else:
             cmd += ["--remux-video", vfmt]
 

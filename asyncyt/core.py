@@ -18,7 +18,18 @@ import tempfile
 from collections.abc import Callable as CallableABC
 from json import loads
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, overload
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+    overload,
+)
 
 from .basemodels import (
     DownloadConfig,
@@ -52,6 +63,8 @@ from .exceptions import (
     YtdlpSearchError,
 )
 from .utils import (
+    CMD,
+    OUTPUT,
     call_callback,
     clean_youtube_url,
     get_id,
@@ -444,6 +457,8 @@ class AsyncYT(BinaryManager):
         config: Optional[DownloadConfig] = None
         progress_callback = None
         finalize: bool = True
+        include_cmd: bool = False
+        boolean_count = 0
 
         if "url" in kwargs:
             url = kwargs["url"]
@@ -457,6 +472,8 @@ class AsyncYT(BinaryManager):
             req = kwargs["request"]
             url = req.url
             config = req.config
+        if "include_cmd" in kwargs:
+            include_cmd = kwargs["include_cmd"]
 
         for arg in args:
             if isinstance(arg, str):
@@ -464,7 +481,11 @@ class AsyncYT(BinaryManager):
             elif isinstance(arg, DownloadConfig):
                 config = arg
             elif isinstance(arg, bool):
-                finalize = arg
+                if boolean_count == 0:
+                    finalize = arg
+                elif boolean_count == 1:
+                    include_cmd = arg
+                boolean_count += 1
             elif isinstance(arg, CallableABC):
                 progress_callback = arg
             elif isinstance(arg, DownloadRequest):
@@ -473,7 +494,7 @@ class AsyncYT(BinaryManager):
 
         if not url:
             raise TypeError("url is required")
-        return url, config, progress_callback, finalize
+        return url, config, progress_callback, finalize, include_cmd
 
     async def finalize_download(
         self,
@@ -537,6 +558,7 @@ class AsyncYT(BinaryManager):
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
         finalize: bool = True,
+        include_cmd: Literal[False] = False,
     ) -> Path: ...
 
     @overload
@@ -547,23 +569,65 @@ class AsyncYT(BinaryManager):
             Callable[[DownloadProgress], Union[None, Awaitable[None]]]
         ] = None,
         finalize: bool = True,
+        include_cmd: Literal[False] = False,
     ) -> Path: ...
 
-    async def download(self, *args, **kwargs) -> Path:
-        """
-        Download a single video (or audio) from *url*.
+    @overload
+    async def download(
+        self,
+        url: str,
+        config: Optional[DownloadConfig] = None,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
+        finalize: bool = True,
+        include_cmd: Literal[True] = True,
+    ) -> Tuple[Path, CMD, OUTPUT]: ...
 
-        :param url: Video URL **or** a :class:`DownloadRequest`.
-        :param config: Optional :class:`DownloadConfig`.
-        :param progress_callback: Async or sync callable receiving :class:`DownloadProgress`.
-        :param finalize: Move output from temp dir to ``config.output_path``.
-        :return: :class:`Path` to the downloaded file.
-        :raises DownloadAlreadyExistsError: Same download already running.
-        :raises YtdlpDownloadError: yt-dlp returned a non-zero exit code.
-        :raises DownloadGotCanceledError: :meth:`cancel` was called.
-        :raises FileNotFoundError: FFmpeg not found, or no output file produced.
+    @overload
+    async def download(
+        self,
+        request: DownloadRequest,
+        progress_callback: Optional[
+            Callable[[DownloadProgress], Union[None, Awaitable[None]]]
+        ] = None,
+        finalize: bool = True,
+        include_cmd: Literal[True] = True,
+    ) -> Tuple[Path, CMD, OUTPUT]: ...
+
+    async def download(self, *args, **kwargs) -> Path | Tuple[Path, CMD, OUTPUT]:
         """
-        url, pre_config, progress_callback, finalize = self._get_config(*args, **kwargs)
+        Download a single video or audio resource.
+
+        This method supports two calling conventions:
+        1. Passing a ``url`` string and an optional :class:`DownloadConfig`.
+        2. Passing a pre-built :class:`DownloadRequest`.
+
+        :param url: The target video URL (Position 0).
+        :param request: A :class:`DownloadRequest` instance (Position 0).
+        :param config: Optional :class:`DownloadConfig` if a URL was provided.
+        :param progress_callback: An async or sync callable that receives
+            :class:`DownloadProgress` updates during the download.
+        :param finalize: If ``True`` (default), moves the file from the temporary
+            directory to the final ``config.output_path``.
+        :param include_cmd: If ``True``, the return type changes to include the
+            raw command and terminal output for debugging or logging.
+
+        :return:
+            - If ``include_cmd`` is ``False``: The :class:`Path` to the downloaded file.
+            - If ``include_cmd`` is ``True``: A :class:`Tuple` containing:
+                1. :class:`Path`: The path to the downloaded file.
+                2. :class:`CMD`: The full CLI command string executed. (str)
+                3. :class:`OUTPUT`: The raw stdout/stderr output from the process. (str)
+
+        :raises DownloadAlreadyExistsError: If the same download is already in progress.
+        :raises YtdlpDownloadError: If yt-dlp returns a non-zero exit code.
+        :raises DownloadGotCanceledError: If the task was aborted via :meth:`cancel`.
+        :raises FileNotFoundError: If FFmpeg is missing or no file was generated.
+        """
+        url, pre_config, progress_callback, finalize, include_cmd = self._get_config(
+            *args, **kwargs
+        )
         config: DownloadConfig = pre_config or DownloadConfig()
         url = clean_youtube_url(url)
         id_ = get_id(url, config)
@@ -666,7 +730,10 @@ class AsyncYT(BinaryManager):
 
             files = [f for f in temp_path.iterdir() if f.is_file()]
             if files:
-                return files[0]
+                response = (
+                    files[0] if include_cmd else (files[0], CMD(cmd), OUTPUT(output))
+                )
+                return response
             raise FileNotFoundError("No output file found in temp dir")
 
         except asyncio.CancelledError:
@@ -712,13 +779,23 @@ class AsyncYT(BinaryManager):
         """
         Download with an API-friendly :class:`DownloadResponse` return value.
 
-        Accepts the same arguments as :meth:`download`.
+        :param url: Video URL **or** a :class:`DownloadRequest`.
+        :param config: Optional :class:`DownloadConfig`.
+        :param progress_callback: Async or sync callable receiving :class:`DownloadProgress`.
+        :param finalize: Move output from temp dir to ``config.output_path``.
+        :raises DownloadAlreadyExistsError: Same download already running.
+        :raises YtdlpDownloadError: yt-dlp returned a non-zero exit code.
+        :raises DownloadGotCanceledError: :meth:`cancel` was called.
+        :raises FileNotFoundError: FFmpeg not found, or no output file produced.
+
 
         :return: :class:`DownloadResponse` with metadata and optional error.
         """
         id_: Optional[str] = None
         try:
-            url, config, progress_callback, finalize = self._get_config(*args, **kwargs)
+            url, config, progress_callback, finalize, _ = self._get_config(
+                *args, **kwargs
+            )
             config = config or DownloadConfig()
             id_ = get_id(url, config)
 
@@ -739,7 +816,9 @@ class AsyncYT(BinaryManager):
                     id=id_,
                 )
 
-            filename = await self.download(url, config, progress_callback, finalize)
+            filename, cmd, output = await self.download(
+                url, config, progress_callback, finalize, include_cmd=True
+            )
             file = Path(filename)
             new_file = get_unique_filename(
                 file, re.sub(r'[\\/:"*?<>|]', "_", video_info.title)
@@ -752,6 +831,8 @@ class AsyncYT(BinaryManager):
                 filename=str(file.absolute()),
                 video_info=video_info,
                 id=id_,
+                cmd=cmd,
+                output=output,
             )
         except AsyncYTBase:
             raise

@@ -1,19 +1,29 @@
+import hashlib
 import inspect
 from pathlib import Path
-import hashlib
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 if TYPE_CHECKING:
     from .basemodels import DownloadConfig
 
 __all__ = [
+    "CMD",
+    "OUTPUT",
     "call_callback",
     "get_unique_filename",
     "get_id",
     "get_unique_path",
     "clean_youtube_url",
 ]
+
+
+class CMD(str):
+    pass
+
+
+class OUTPUT(str):
+    pass
 
 
 async def call_callback(callback, *args, **kwargs):
